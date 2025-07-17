@@ -1,0 +1,1909 @@
+const express = require('express');
+const mongoose = require('mongoose');
+const dotenv = require('dotenv');
+const cors = require('cors');
+const User = require('./models/User');
+const Item = require('./models/Item');
+const Supplier = require('./models/Supplier');
+const Category = require('./models/Category');
+const Customer = require('./models/Customer');
+const Sale = require('./models/Sale');
+const SaleItem = require('./models/SaleItem');
+const PaymentMethod = require('./models/PaymentMethod');
+const CreditTransaction = require('./models/CreditTransaction');
+const Repayment = require('./models/Repayment');
+const CommodityRequest = require('./models/CommodityRequest');
+const CashExpenditure = require('./models/CashExpenditure');
+const InventoryAdjustment = require('./models/InventoryAdjustment');
+const InventoryStock = require('./models/InventoryStock');
+
+dotenv.config();
+
+const app = express();
+
+// Middleware
+app.use(cors());
+app.use(express.json());
+
+// --- Seed Categories ---
+async function seedCategories() {
+  try {
+    const count = await Category.countDocuments();
+    if (count > 0) {
+      console.log('Categories already exist.');
+      return;
+    }
+
+    const categories = [
+      { name: 'Grains & Cereals', item_type: 'product' },
+      { name: 'Flours & Baking', item_type: 'product' },
+      { name: 'Household & Cleaning', item_type: 'product' },
+      { name: 'Cooking Essentials', item_type: 'product' },
+      { name: 'Beverages', item_type: 'product' },
+      { name: 'Snacks & Confectionery', item_type: 'product' },
+      { name: 'Personal Care & Toiletries', item_type: 'product' },
+      { name: 'School Items', item_type: 'product' },
+    ];
+
+    await Category.insertMany(categories);
+    console.log('Categories have been seeded successfully.');
+  } catch (err) {
+    console.error('Error seeding categories:', err);
+  }
+}
+
+// --- Seed Payment Methods ---
+async function seedPaymentMethods() {
+  try {
+    const count = await PaymentMethod.countDocuments();
+    if (count > 0) {
+      console.log('Payment methods already exist.');
+      return;
+    }
+
+    const paymentMethods = [
+      { name: 'Cash', description: 'Cash payment' },
+      { name: 'Mobile Money', description: 'Mobile money transfer' },
+      { name: 'Bank Transfer', description: 'Bank transfer payment' },
+      { name: 'Credit Card', description: 'Credit card payment' },
+    ];
+
+    await PaymentMethod.insertMany(paymentMethods);
+    console.log('Payment methods have been seeded successfully.');
+  } catch (err) {
+    console.error('Error seeding payment methods:', err);
+  }
+}
+
+// --- Seed Sample Items ---
+async function seedSampleItems() {
+  try {
+    const count = await Item.countDocuments();
+    if (count > 0) {
+      console.log('Items already exist.');
+      return;
+    }
+
+    // Get a category for the items
+    const category = await Category.findOne();
+    if (!category) {
+      console.log('No category found. Please seed categories first.');
+      return;
+    }
+
+    const sampleItems = [
+      {
+        name: 'Rice',
+        category_id: category._id,
+        item_type: 'weighable',
+        base_unit: 'kg',
+        package_unit: 'Sack',
+        weight_per_package: 50,
+        selling_price_per_unit: 2.5,
+        purchase_price_per_package: 100,
+        minimum_stock: 100
+      },
+      {
+        name: 'Sugar',
+        category_id: category._id,
+        item_type: 'weighable',
+        base_unit: 'kg',
+        package_unit: 'Sack',
+        weight_per_package: 25,
+        selling_price_per_unit: 3.0,
+        purchase_price_per_package: 60,
+        minimum_stock: 50
+      },
+      {
+        name: 'Cooking Oil',
+        category_id: category._id,
+        item_type: 'unit_based',
+        base_unit: 'l',
+        package_unit: 'Bottle',
+        units_per_package: 1,
+        selling_price_per_unit: 5.0,
+        purchase_price_per_package: 4.0,
+        minimum_stock: 20
+      },
+      {
+        name: 'Soap',
+        category_id: category._id,
+        item_type: 'unit_based',
+        base_unit: 'pcs',
+        package_unit: 'Box',
+        units_per_package: 12,
+        selling_price_per_unit: 1.5,
+        purchase_price_per_package: 15,
+        minimum_stock: 10
+      }
+    ];
+
+    await Item.insertMany(sampleItems);
+    console.log('Sample items have been seeded successfully.');
+  } catch (err) {
+    console.error('Error seeding sample items:', err);
+  }
+}
+
+// Connect to MongoDB
+mongoose.connect(process.env.MONGO_URI)
+  .then(() => {
+    console.log('MongoDB Connected');
+    seedCategories(); // Call seeder after connection
+    seedPaymentMethods(); // Call payment methods seeder
+    seedSampleItems(); // Call sample items seeder
+  })
+  .catch((err) => console.error('MongoDB connection error:', err));
+
+// --- API Routes ---
+
+// Basic route
+app.get('/', (req, res) => {
+  res.send('API is running...');
+});
+
+// Get all categories
+app.get('/api/categories', async (req, res) => {
+  try {
+    const categories = await Category.find();
+    res.status(200).json(categories);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error while fetching categories' });
+  }
+});
+
+// Signup route
+app.post('/api/auth/signup', async (req, res) => {
+  try {
+    const user = new User(req.body);
+    await user.save();
+    res.status(201).json({ message: 'User registered successfully' });
+  } catch (err) {
+    console.error(err);
+    res.status(400).json({ error: 'User registration failed', details: err });
+  }
+});
+
+// Login route
+app.post('/api/auth/login', async (req, res) => {
+  const { email, password } = req.body;
+  try {
+    const user = await User.findOne({ email });
+
+    if (!user) {
+      console.log('No user found with email:', email);
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
+
+    console.log('User found:', user);
+
+    const isMatch = await user.comparePassword(password);
+
+    console.log('Password match result:', isMatch);
+
+    if (!isMatch) {
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
+
+    user.last_login = new Date();
+    await user.save();
+
+    res.status(200).json({ message: 'Login successful', user });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error during login' });
+  }
+});
+
+// Create a new item
+app.post('/api/items', async (req, res) => {
+  try {
+    const { supplier_name, supplier_contact, ...itemData } = req.body;
+    let supplierId;
+
+    if (supplier_name) {
+      // Find or create a supplier
+      let supplier = await Supplier.findOne({ name: supplier_name });
+      
+      if (!supplier) {
+        supplier = new Supplier({ 
+          name: supplier_name, 
+          contact_info: supplier_contact || 'Not provided' 
+        });
+        await supplier.save();
+      }
+      supplierId = supplier._id;
+    }
+
+    const item = new Item({
+      ...itemData,
+      supplier_id: supplierId
+    });
+
+    await item.save();
+    res.status(201).json({ message: 'Item added successfully', item });
+  } catch (err) {
+    console.error(err);
+    res.status(400).json({ error: 'Failed to add item', details: err });
+  }
+});
+
+// Get items by item_type
+app.get('/api/items', async (req, res) => {
+  try {
+    const { item_type } = req.query;
+    const filter = {};
+    if (item_type) filter.item_type = item_type;
+    const items = await Item.find(filter).populate('category_id').populate('supplier_id');
+    res.status(200).json(items);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error while fetching items' });
+  }
+});
+
+// Get item by ID
+app.get('/api/items/:id', async (req, res) => {
+  try {
+    const item = await Item.findById(req.params.id).populate('supplier_id');
+    if (!item) {
+      return res.status(404).json({ error: 'Item not found' });
+    }
+    res.json(item);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error', details: err.message });
+  }
+});
+
+// Get all customers
+app.get('/api/customers', async (req, res) => {
+  try {
+    const customers = await Customer.find().sort({ name: 1 });
+    res.status(200).json(customers);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error while fetching customers' });
+  }
+});
+
+// Get all payment methods
+app.get('/api/payment-methods', async (req, res) => {
+  try {
+    const paymentMethods = await PaymentMethod.find({ is_active: true }).sort({ name: 1 });
+    res.status(200).json(paymentMethods);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error while fetching payment methods' });
+  }
+});
+
+// Create a new customer
+app.post('/api/customers', async (req, res) => {
+  try {
+    const customer = new Customer(req.body);
+    await customer.save();
+    res.status(201).json({ message: 'Customer created successfully', customer });
+  } catch (err) {
+    console.error(err);
+    res.status(400).json({ error: 'Failed to create customer', details: err });
+  }
+});
+
+// Create a new sale
+app.post('/api/sales', async (req, res) => {
+  try {
+    console.log('Received sale data:', JSON.stringify(req.body, null, 2));
+    const { items, ...saleData } = req.body;
+    // Convert date string to Date object if provided
+    if (saleData.date && typeof saleData.date === 'string') {
+      saleData.date = new Date(saleData.date);
+    }
+    // Set default values
+    saleData.customer_type = saleData.customer_type || 'retail';
+    saleData.status = saleData.status || 'completed';
+    saleData.payment_status = saleData.payment_status || 'paid';
+    saleData.discount_amount = saleData.discount_amount || 0;
+    saleData.tax_amount = saleData.tax_amount || 0;
+    console.log('Sale data after processing:', JSON.stringify(saleData, null, 2));
+    console.log('Items data:', JSON.stringify(items, null, 2));
+    // Check stock for all items before proceeding
+    if (items && items.length > 0) {
+      for (const item of items) {
+        const dbItem = await Item.findById(item.item_id);
+        if (!dbItem) {
+          return res.status(400).json({ error: `Item not found: ${item.item_id}` });
+        }
+        if (dbItem.total_quantity < item.quantity) {
+          return res.status(400).json({ error: `Insufficient stock for item: ${dbItem.name}` });
+        }
+      }
+    }
+    // Create the sale
+    const sale = new Sale(saleData);
+    console.log('Sale object created:', sale);
+    await sale.save();
+    console.log('Sale saved successfully');
+    // Create sale items and deduct stock
+    if (items && items.length > 0) {
+      const saleItems = items.map(item => ({
+        sale_id: sale._id,
+        item_id: item.item_id,
+        quantity_sold: item.quantity,
+        unit_price: item.unit_price,
+        total_price: item.total_price,
+        discount: item.discount || 0
+      }));
+      console.log('Sale items to create:', JSON.stringify(saleItems, null, 2));
+      // Use Promise.all to create all sale items and update stock
+      await Promise.all(saleItems.map(async itemData => {
+        const saleItem = new SaleItem(itemData);
+        await saleItem.save();
+        // Deduct stock
+        await Item.findByIdAndUpdate(itemData.item_id, { $inc: { total_quantity: -itemData.quantity_sold } });
+      }));
+      console.log('Sale items created and stock updated successfully');
+    }
+    // Populate the sale with items before sending response
+    const populatedSale = await Sale.findById(sale._id)
+      .populate({
+        path: 'items',
+        populate: {
+          path: 'item_id',
+          select: 'name selling_price_per_unit'
+        }
+      });
+    res.status(201).json({ 
+      message: 'Sale created successfully', 
+      sale: populatedSale,
+      itemsCount: items ? items.length : 0
+    });
+  } catch (err) {
+    console.error('Error creating sale:', err);
+    console.error('Error details:', err.message);
+    if (err.errors) {
+      console.error('Validation errors:', Object.keys(err.errors).map(key => ({
+        field: key,
+        message: err.errors[key].message
+      })));
+    }
+    res.status(400).json({ error: 'Failed to create sale', details: err.message });
+  }
+});
+
+// Get all sales
+app.get('/api/sales', async (req, res) => {
+  try {
+    const sales = await Sale.find()
+      .populate('customer_id')
+      .populate('payment_method_id')
+      .populate('sales_person_id')
+      .populate({
+        path: 'items',
+        populate: {
+          path: 'item_id',
+          select: 'name selling_price_per_unit base_unit'
+        }
+      })
+      .sort({ createdAt: -1, date: -1 });
+    res.status(200).json(sales);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error while fetching sales' });
+  }
+});
+
+// Get today's sales total
+app.get('/api/sales/today-total', async (req, res) => {
+  try {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const end = new Date();
+    end.setHours(23, 59, 59, 999);
+    const result = await Sale.aggregate([
+      { $match: { date: { $gte: start, $lte: end } } },
+      { $group: { _id: null, total: { $sum: "$grand_total" } } }
+    ]);
+    const total = result.length > 0 ? result[0].total : 0;
+    res.json({ total });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch today\'s sales total' });
+  }
+});
+
+// Get today's customer count (number of sales today)
+app.get('/api/sales/today-customers', async (req, res) => {
+  try {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const end = new Date();
+    end.setHours(23, 59, 59, 999);
+    const count = await Sale.countDocuments({ date: { $gte: start, $lte: end } });
+    res.json({ count });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch today\'s customer count' });
+  }
+});
+
+// Get today's profits
+app.get('/api/sales/today-profits', async (req, res) => {
+  try {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const end = new Date();
+    end.setHours(23, 59, 59, 999);
+
+    // Find all sales for today
+    const sales = await Sale.find({ date: { $gte: start, $lte: end } }, '_id');
+    const saleIds = sales.map(s => s._id);
+    if (saleIds.length === 0) return res.json({ profit: 0 });
+
+    // Find all sale items for these sales
+    const saleItems = await SaleItem.find({ sale_id: { $in: saleIds } });
+    if (saleItems.length === 0) return res.json({ profit: 0 });
+
+    // Get all involved item ids
+    const itemIds = [...new Set(saleItems.map(si => si.item_id.toString()))];
+    const items = await Item.find({ _id: { $in: itemIds } });
+    const itemMap = {};
+    items.forEach(item => {
+      let purchasePricePerUnit = 0;
+      if (item.item_type === 'weighable' && item.weight_per_package && item.purchase_price_per_package) {
+        purchasePricePerUnit = item.purchase_price_per_package / item.weight_per_package;
+      } else if (item.item_type === 'unit_based' && item.units_per_package && item.purchase_price_per_package) {
+        purchasePricePerUnit = item.purchase_price_per_package / item.units_per_package;
+      } else if (item.purchase_price_per_package) {
+        purchasePricePerUnit = item.purchase_price_per_package;
+      }
+      itemMap[item._id.toString()] = purchasePricePerUnit;
+    });
+
+    // Calculate profit
+    let totalProfit = 0;
+    saleItems.forEach(si => {
+      const cost = (itemMap[si.item_id.toString()] || 0) * si.quantity_sold;
+      const revenue = (si.unit_price || 0) * si.quantity_sold;
+      totalProfit += (revenue - cost);
+    });
+    res.json({ profit: Math.round(totalProfit) });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch today\'s profits' });
+  }
+});
+
+// Create a new credit transaction
+app.post('/api/credit-transactions', async (req, res) => {
+  try {
+    const creditTransaction = new CreditTransaction(req.body);
+    await creditTransaction.save();
+    res.status(201).json({ message: 'Credit transaction created successfully', creditTransaction });
+  } catch (err) {
+    console.error('Error creating credit transaction:', err);
+    res.status(400).json({ error: 'Failed to create credit transaction', details: err.message });
+  }
+});
+
+// Test route to verify server is working
+app.get('/api/test', (req, res) => {
+  res.status(200).json({ message: 'Server is working', timestamp: new Date().toISOString() });
+});
+
+// Get customer credit accounts overview
+app.get('/api/customer-credit-accounts', async (req, res) => {
+  try {
+    console.log('API called: /api/customer-credit-accounts');
+    
+    // Get all customers who are credit customers
+    const customers = await Customer.find({ is_credit_customer: true });
+    console.log('Found customers:', customers.length);
+    
+    const creditAccounts = await Promise.all(customers.map(async (customer) => {
+      console.log('Processing customer:', customer.name);
+      
+      // Get all credit transactions for this customer
+      const creditTransactions = await CreditTransaction.find({ 
+        customer_id: customer._id 
+      }).sort({ transaction_date: -1 });
+      
+      console.log('Found transactions for', customer.name, ':', creditTransactions.length);
+      
+      // Calculate totals
+      const totalCredit = creditTransactions.reduce((sum, transaction) => 
+        sum + transaction.total_amount, 0);
+      
+      const amountPaid = creditTransactions.reduce((sum, transaction) => 
+        sum + (transaction.amount_paid || 0), 0);
+      
+      const balance = totalCredit - amountPaid;
+      
+      // Get last payment date from Repayment collection
+      const lastRepayment = await Repayment.findOne({
+        credit_transaction_id: { $in: creditTransactions.map(tx => tx._id) }
+      }).sort({ payment_date: -1 });
+      const lastPaymentDate = lastRepayment ? lastRepayment.payment_date : null;
+      
+      // Get most recent transaction date for sorting
+      const latestTransactionDate = creditTransactions.length > 0 ? 
+        creditTransactions[0].transaction_date : null;
+      
+      // Determine overall status
+      let status = 'No Transactions';
+      if (creditTransactions.length > 0) {
+        const hasOverdue = creditTransactions.some(t => 
+          t.payment_status === 'overdue' || 
+          (t.payment_status === 'pending' && new Date() > t.agreed_repayment_date)
+        );
+        const hasPending = creditTransactions.some(t => 
+          t.payment_status === 'pending' && new Date() <= t.agreed_repayment_date
+        );
+        
+        if (hasOverdue) status = 'Overdue';
+        else if (hasPending) status = 'Pending';
+        else status = 'Paid';
+      }
+      
+      return {
+        customer_id: customer._id,
+        customer_name: customer.name,
+        customer_phone: customer.phone,
+        customer_email: customer.email,
+        total_credit: totalCredit,
+        amount_paid: amountPaid,
+        balance: balance,
+        last_payment_date: lastPaymentDate,
+        latest_transaction_date: latestTransactionDate,
+        status: status,
+        transaction_count: creditTransactions.length
+      };
+    }));
+    
+    console.log('Returning credit accounts:', creditAccounts.length);
+    res.status(200).json(creditAccounts);
+  } catch (err) {
+    console.error('Error fetching customer credit accounts:', err);
+    res.status(500).json({ error: 'Server error while fetching credit accounts' });
+  }
+});
+
+// Get customers with credit records (for dropdown)
+app.get('/api/customers-with-credit', async (req, res) => {
+  try {
+    const { search } = req.query;
+    
+    let query = { is_credit_customer: true };
+    
+    // Add search filter if provided
+    if (search) {
+      query.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { phone: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } }
+      ];
+    }
+    
+    const customers = await Customer.find(query)
+      .select('name phone email total_credit_balance')
+      .sort({ name: 1 })
+      .limit(20);
+    
+    res.status(200).json(customers);
+  } catch (err) {
+    console.error('Error fetching customers with credit:', err);
+    res.status(500).json({ error: 'Server error while fetching customers' });
+  }
+});
+
+// Get customer credit details for payment recording
+app.get('/api/customer-credit-details/:customerId', async (req, res) => {
+  try {
+    const { customerId } = req.params;
+    
+    // Get customer details
+    const customer = await Customer.findById(customerId);
+    if (!customer) {
+      return res.status(404).json({ error: 'Customer not found' });
+    }
+    
+    // Get credit transactions for this customer
+    const creditTransactions = await CreditTransaction.find({ 
+      customer_id: customerId,
+      payment_status: { $in: ['pending', 'partially_paid', 'overdue'] }
+    })
+    .populate('sale_id')
+    .sort({ transaction_date: -1 });
+    
+    // Calculate totals
+    const totalOrderBalance = creditTransactions.reduce((sum, transaction) => 
+      sum + transaction.total_amount, 0);
+    
+    const totalPaid = creditTransactions.reduce((sum, transaction) => 
+      sum + (transaction.amount_paid || 0), 0);
+    
+    const outstandingBalance = totalOrderBalance - totalPaid;
+    
+    // Calculate credit time (days since first credit transaction)
+    let creditTime = '-';
+    if (creditTransactions.length > 0) {
+      // Find the latest agreed_repayment_date
+      const latestRepaymentDate = creditTransactions.reduce((latest, tx) => {
+        const date = tx.agreed_repayment_date ? new Date(tx.agreed_repayment_date) : null;
+        return (!latest || (date && date > latest)) ? date : latest;
+      }, null);
+      if (latestRepaymentDate) {
+        const now = new Date();
+        const msPerDay = 1000 * 60 * 60 * 24;
+        const daysLeft = Math.ceil((latestRepaymentDate - now) / msPerDay);
+        creditTime = daysLeft >= 0 ? `${daysLeft} days` : 'Overdue';
+      }
+    }
+    
+    // Format outstanding credit sales for the table
+    const outstandingSales = creditTransactions.map(transaction => ({
+      id: transaction._id,
+      date: transaction.transaction_date.toISOString().split('T')[0],
+      total_amount: transaction.total_amount,
+      amount_paid: transaction.amount_paid || 0,
+      amount_due: transaction.total_amount - (transaction.amount_paid || 0),
+      due_date: transaction.agreed_repayment_date.toISOString().split('T')[0],
+      status: transaction.payment_status,
+      reference: transaction.reference_number
+    }));
+    
+    res.status(200).json({
+      customer: {
+        id: customer._id,
+        name: customer.name,
+        phone: customer.phone,
+        email: customer.email
+      },
+      credit_summary: {
+        total_order_balance: totalOrderBalance,
+        total_paid: totalPaid,
+        outstanding_balance: outstandingBalance,
+        credit_time: creditTime
+      },
+      outstanding_sales: outstandingSales
+    });
+  } catch (err) {
+    console.error('Error fetching customer credit details:', err);
+    res.status(500).json({ error: 'Server error while fetching credit details' });
+  }
+});
+
+// Record a payment
+app.post('/api/repayments', async (req, res) => {
+  try {
+    const { 
+      customer_id, 
+      credit_transaction_ids, 
+      amount_paid, 
+      payment_method_id, 
+      payment_date, 
+      remarks 
+    } = req.body;
+    
+    console.log('Recording payment:', JSON.stringify(req.body, null, 2));
+    
+    // Validate required fields
+    if (!customer_id || !credit_transaction_ids || !amount_paid || !payment_method_id || !payment_date) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+    
+    // Validate amount
+    if (amount_paid <= 0) {
+      return res.status(400).json({ error: 'Amount paid must be greater than 0' });
+    }
+    
+    // Get customer
+    const customer = await Customer.findById(customer_id);
+    if (!customer) {
+      return res.status(404).json({ error: 'Customer not found' });
+    }
+    
+    // Get credit transactions in the order provided
+    const creditTransactions = await Promise.all(
+      credit_transaction_ids.map(id => CreditTransaction.findOne({ _id: id, customer_id }))
+    );
+    
+    // Filter out any not found
+    const validTransactions = creditTransactions.filter(Boolean);
+    if (validTransactions.length === 0) {
+      return res.status(404).json({ error: 'No valid credit transactions found' });
+    }
+    
+    // Calculate total outstanding balance for selected transactions
+    const totalOutstanding = validTransactions.reduce((sum, transaction) => 
+      sum + (transaction.total_amount - (transaction.amount_paid || 0)), 0);
+    
+    if (amount_paid > totalOutstanding) {
+      return res.status(400).json({ error: 'Amount paid exceeds total outstanding balance' });
+    }
+    
+    // Create repayment records in order
+    const repayments = [];
+    let remainingAmount = amount_paid;
+    const updatedTransactions = [];
+    
+    for (const transaction of validTransactions) {
+      if (remainingAmount <= 0) break;
+      const outstanding = transaction.total_amount - (transaction.amount_paid || 0);
+      const paymentForThisTransaction = Math.min(remainingAmount, outstanding);
+      if (paymentForThisTransaction > 0) {
+        const repayment = new Repayment({
+          credit_transaction_id: transaction._id,
+          amount_paid: paymentForThisTransaction,
+          payment_date: new Date(payment_date),
+          payment_method_id: payment_method_id,
+          remarks: remarks,
+          recorded_by: req.body.recorded_by || null // You might want to get this from auth
+        });
+        await repayment.save();
+        repayments.push(repayment);
+        remainingAmount -= paymentForThisTransaction;
+        // Fetch updated transaction
+        const updatedTx = await CreditTransaction.findById(transaction._id);
+        updatedTransactions.push({
+          id: updatedTx._id,
+          total_amount: updatedTx.total_amount,
+          amount_paid: updatedTx.amount_paid,
+          outstanding_balance: updatedTx.total_amount - updatedTx.amount_paid,
+          payment_status: updatedTx.payment_status
+        });
+      }
+    }
+    
+    // Update customer's total credit balance
+    await Customer.findByIdAndUpdate(customer_id, {
+      $inc: { total_credit_balance: -amount_paid }
+    });
+    
+    res.status(201).json({
+      message: 'Payment recorded successfully',
+      payment_amount: amount_paid,
+      repayments_count: repayments.length,
+      remaining_balance: remainingAmount,
+      updated_transactions: updatedTransactions
+    });
+    
+  } catch (err) {
+    console.error('Error recording payment:', err);
+    res.status(400).json({ error: 'Failed to record payment', details: err.message });
+  }
+});
+
+// Get credit transactions for a customer
+app.get('/api/credit-transactions', async (req, res) => {
+  try {
+    const { customer_id } = req.query;
+    if (!customer_id) {
+      return res.status(400).json({ error: 'customer_id is required' });
+    }
+    const transactions = await CreditTransaction.find({ customer_id }).sort({ transaction_date: -1 });
+    res.status(200).json(transactions);
+  } catch (err) {
+    console.error('Error fetching credit transactions:', err);
+    res.status(500).json({ error: 'Server error while fetching credit transactions' });
+  }
+});
+
+// Create a new commodity request
+app.post('/api/commodity-requests', async (req, res) => {
+  try {
+    const {
+      commodity_name,
+      quantity,
+      customer_id,
+      customer_contact,
+      status,
+      requestType
+    } = req.body;
+
+    if (!commodity_name) {
+      return res.status(400).json({ error: 'commodity_name is required' });
+    }
+    if (!customer_id) {
+      return res.status(400).json({ error: 'customer_id is required' });
+    }
+
+    // Map requestType to product_type
+    let product_type = 'other';
+    if (requestType === 'Weight-Based') product_type = 'weight_based';
+    else if (requestType === 'Unit-Based') product_type = 'unit_based';
+
+    const newRequest = new CommodityRequest({
+      commodity_name,
+      quantity_desired: quantity,
+      customer_id,
+      customer_contact,
+      status: status || 'pending',
+      requested_date: req.body.requested_date || new Date(),
+      product_type
+    });
+    await newRequest.save();
+    res.status(201).json({ message: 'Commodity request created successfully', request: newRequest });
+  } catch (err) {
+    console.error('Error creating commodity request:', err);
+    res.status(400).json({ error: 'Failed to create commodity request', details: err.message });
+  }
+});
+
+// Get customers who have made a commodity request (most recent first, unique)
+app.get('/api/commodity-request-customers', async (req, res) => {
+  try {
+    // Aggregate to get the most recent request per customer
+    const recentRequests = await CommodityRequest.aggregate([
+      { $sort: { requested_date: -1 } },
+      { $group: { _id: "$customer_id", mostRecentRequest: { $first: "$requested_date" } } },
+      { $sort: { mostRecentRequest: -1 } }
+    ]);
+    const customerIds = recentRequests.map(r => r._id);
+    // Fetch customers in the same order as customerIds
+    const customers = await Customer.find({ _id: { $in: customerIds } }).select('_id name phone');
+    // Sort customers to match the order in customerIds
+    const customersMap = new Map(customers.map(c => [c._id.toString(), c]));
+    const sortedCustomers = customerIds.map(id => customersMap.get(id.toString())).filter(Boolean);
+    res.status(200).json(sortedCustomers);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch commodity request customers', details: err.message });
+  }
+});
+
+// Get all commodity requests with customer info (paginated)
+app.get('/api/commodity-requests', async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 4;
+    const skip = (page - 1) * limit;
+    const total = await CommodityRequest.countDocuments();
+    const requests = await CommodityRequest.find()
+      .sort({ requested_date: -1 })
+      .skip(skip)
+      .limit(limit)
+      .populate({ path: 'customer_id', select: 'name phone' });
+    res.status(200).json({ requests, total });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch commodity requests', details: err.message });
+  }
+});
+
+// Create a new cash expenditure (expense)
+app.post('/api/cash-expenditures', async (req, res) => {
+  try {
+    const {
+      amount,
+      purpose,
+      expenditure_date,
+      expense_type,
+      person_responsible,
+      payment_source,
+      receipt_reference,
+      remarks,
+      expenditure_category,
+      approved_by,
+      approval_date,
+      status,
+      attachment_url
+    } = req.body;
+
+    if (!amount || !purpose) {
+      return res.status(400).json({ error: 'Amount and purpose are required.' });
+    }
+
+    const newExpenditure = new CashExpenditure({
+      amount,
+      purpose,
+      expenditure_date: expenditure_date ? new Date(expenditure_date) : undefined,
+      expense_type: expense_type || 'Cash Expenditure',
+      person_responsible,
+      payment_source,
+      receipt_reference,
+      remarks,
+      expenditure_category,
+      approved_by,
+      approval_date,
+      status,
+      attachment_url
+    });
+    await newExpenditure.save();
+    res.status(201).json({ message: 'Expense recorded successfully', expenditure: newExpenditure });
+  } catch (err) {
+    console.error('Error creating cash expenditure:', err);
+    res.status(400).json({ error: 'Failed to record expense', details: err.message });
+  }
+});
+
+// Add new expense (CashExpenditure)
+app.post('/api/expenses', async (req, res) => {
+  try {
+    const { amount, purpose, date } = req.body;
+    // Map frontend fields to model fields
+    const expense = new CashExpenditure({
+      amount,
+      purpose,
+      expenditure_date: date,
+      expense_type: 'Cash Expenditure',
+    });
+    await expense.save();
+    res.status(201).json({ message: 'Expense added successfully', expense });
+  } catch (error) {
+    res.status(500).json({ message: 'Error adding expense', error: error.message });
+  }
+});
+
+// Get all expenses (CashExpenditure) with pagination
+app.get('/api/expenses', async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 4;
+    const skip = (page - 1) * limit;
+    const total = await CashExpenditure.countDocuments();
+    const expenses = await CashExpenditure.find({}, {
+      amount: 1,
+      purpose: 1,
+      expenditure_date: 1,
+      expense_type: 1,
+      status: 1,
+      transaction_reference: 1
+    })
+      .sort({ expenditure_date: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
+    // Format date to only include date part
+    expenses.forEach(exp => {
+      if (exp.expenditure_date) {
+        exp.expenditure_date = exp.expenditure_date.toISOString().split('T')[0];
+      }
+    });
+    res.status(200).json({ expenses, total });
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching expenses', error: error.message });
+  }
+});
+
+// Get expenses summary for today, this week, and this month
+app.get('/api/expenses/summary', async (req, res) => {
+  try {
+    const now = new Date();
+    // Today
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+    // This week (assuming week starts on Sunday)
+    const dayOfWeek = now.getDay();
+    const startOfWeek = new Date(now.getFullYear(), now.getMonth(), now.getDate() - dayOfWeek);
+    const endOfWeek = new Date(now.getFullYear(), now.getMonth(), now.getDate() + (7 - dayOfWeek));
+    // This month
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+
+    // Aggregate sums
+    const [todaySum] = await CashExpenditure.aggregate([
+      { $match: { expenditure_date: { $gte: startOfDay, $lt: endOfDay } } },
+      { $group: { _id: null, total: { $sum: "$amount" } } }
+    ]);
+    const [weekSum] = await CashExpenditure.aggregate([
+      { $match: { expenditure_date: { $gte: startOfWeek, $lt: endOfWeek } } },
+      { $group: { _id: null, total: { $sum: "$amount" } } }
+    ]);
+    const [monthSum] = await CashExpenditure.aggregate([
+      { $match: { expenditure_date: { $gte: startOfMonth, $lt: endOfMonth } } },
+      { $group: { _id: null, total: { $sum: "$amount" } } }
+    ]);
+    res.json({
+      today: todaySum ? todaySum.total : 0,
+      week: weekSum ? weekSum.total : 0,
+      month: monthSum ? monthSum.total : 0
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching expenses summary', error: error.message });
+  }
+});
+
+// Get summary of commodity requests (total, pending, fulfilled)
+app.get('/api/commodity-requests/summary', async (req, res) => {
+  try {
+    const total = await CommodityRequest.countDocuments();
+    const pending = await CommodityRequest.countDocuments({ status: 'pending' });
+    const fulfilled = await CommodityRequest.countDocuments({ status: 'fulfilled' });
+    res.json({ total, pending, fulfilled });
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching commodity requests summary', error: error.message });
+  }
+});
+
+// Get detailed status summary of commodity requests
+app.get('/api/commodity-requests/status-summary', async (req, res) => {
+  try {
+    const total = await CommodityRequest.countDocuments();
+    const pending = await CommodityRequest.countDocuments({ status: 'pending' });
+    const approved = await CommodityRequest.countDocuments({ status: 'approved' });
+    const rejected = await CommodityRequest.countDocuments({ status: 'rejected' });
+    const fulfilled = await CommodityRequest.countDocuments({ status: 'fulfilled' });
+    const partially_fulfilled = await CommodityRequest.countDocuments({ status: 'partially_fulfilled' });
+    res.json({ total, pending, approved, rejected, fulfilled, partially_fulfilled });
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching commodity requests status summary', error: error.message });
+  }
+});
+
+// Get top 3 most requested items (excluding fulfilled)
+app.get('/api/commodity-requests/top-items', async (req, res) => {
+  try {
+    const topItems = await CommodityRequest.aggregate([
+      { $match: { status: { $ne: 'fulfilled' } } },
+      { $sort: { requested_date: -1 } },
+      { $group: {
+        _id: '$commodity_name',
+        period: { $first: '$requested_date' },
+        count: { $sum: 1 }
+      }},
+      { $sort: { count: -1, period: -1 } },
+      { $limit: 3 },
+      { $project: { _id: 0, commodity_name: '$_id', period: 1, count: 1 } }
+    ]);
+    res.json(topItems);
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching top requested items', error: error.message });
+  }
+});
+
+// Update item (increment/replace logic)
+app.put('/api/items/:id', async (req, res) => {
+  try {
+    console.log('Update item request:', req.params.id, req.body);
+    
+    const item = await Item.findById(req.params.id);
+    if (!item) {
+      return res.status(404).json({ error: 'Item not found' });
+    }
+
+    console.log('Current item state:', {
+      name: item.name,
+      item_type: item.item_type,
+      total_quantity: item.total_quantity,
+      weight_per_package: item.weight_per_package,
+      units_per_package: item.units_per_package
+    });
+
+    let adjustmentMade = false;
+    let adjustmentDetails = null;
+
+    // Handle increment for weighable
+    if (item.item_type === 'weighable') {
+      const incPackages = parseInt(req.body.increment_initial_packages) || 0;
+      const incWeight = parseFloat(req.body.increment_total_weight) || 0;
+      if (incPackages > 0 || incWeight > 0) {
+        // Create InventoryAdjustment
+        const adjustmentQuantity = incWeight > 0 ? incWeight : incPackages * (item.weight_per_package || 1);
+        console.log(`Creating adjustment for ${item.name}: quantity=${adjustmentQuantity}, type=addition`);
+        
+        const adj = new InventoryAdjustment({
+          item_id: item._id,
+          quantity: adjustmentQuantity,
+          adjustment_type: 'addition',
+          reason: 'Stock increment via update',
+          adjusted_by: req.user ? req.user._id : null, // If you have auth
+          status: 'completed',
+        });
+        await adj.save();
+        console.log(`Adjustment created with ID: ${adj._id}`);
+        
+        try {
+          // Ensure InventoryStock is updated/created
+          const stockResult = await InventoryStock.processAdjustment(adj);
+          console.log(`InventoryStock processed successfully:`, stockResult);
+          adjustmentMade = true;
+          adjustmentDetails = adj;
+        } catch (stockError) {
+          console.error('Error processing InventoryStock:', stockError);
+          throw new Error(`Failed to update inventory stock: ${stockError.message}`);
+        }
+        
+        // Update Item's total_quantity
+        item.total_quantity += incWeight > 0 ? incWeight : incPackages * (item.weight_per_package || 1);
+        
+        console.log(`Updated item ${item.name}: total_quantity = ${item.total_quantity}`);
+      }
+      // Optionally, update initial_packages if you store it
+      if (incPackages > 0 && item.initial_packages !== undefined) {
+        item.initial_packages += incPackages;
+      }
+    }
+    // Handle increment for unit_based
+    if (item.item_type === 'unit_based') {
+      const incPackages = parseInt(req.body.increment_initial_packages) || 0;
+      const incUnits = parseInt(req.body.increment_total_units) || 0;
+      if (incPackages > 0 || incUnits > 0) {
+        // Create InventoryAdjustment
+        const adjustmentQuantity = incUnits > 0 ? incUnits : incPackages * (item.units_per_package || 1);
+        console.log(`Creating adjustment for ${item.name}: quantity=${adjustmentQuantity}, type=addition`);
+        
+        const adj = new InventoryAdjustment({
+          item_id: item._id,
+          quantity: adjustmentQuantity,
+          adjustment_type: 'addition',
+          reason: 'Stock increment via update',
+          adjusted_by: req.user ? req.user._id : null, // If you have auth
+          status: 'completed',
+        });
+        await adj.save();
+        console.log(`Adjustment created with ID: ${adj._id}`);
+        
+        try {
+          // Ensure InventoryStock is updated/created
+          const stockResult = await InventoryStock.processAdjustment(adj);
+          console.log(`InventoryStock processed successfully:`, stockResult);
+          adjustmentMade = true;
+          adjustmentDetails = adj;
+        } catch (stockError) {
+          console.error('Error processing InventoryStock:', stockError);
+          throw new Error(`Failed to update inventory stock: ${stockError.message}`);
+        }
+        
+        // Update Item's total_quantity
+        item.total_quantity += incUnits > 0 ? incUnits : incPackages * (item.units_per_package || 1);
+        
+        console.log(`Updated item ${item.name}: total_quantity = ${item.total_quantity}`);
+      }
+      // Optionally, update initial_packages if you store it
+      if (incPackages > 0 && item.initial_packages !== undefined) {
+        item.initial_packages += incPackages;
+      }
+    }
+    // Replace minimum_stock and expiry_date if provided
+    if (req.body.minimum_stock !== undefined) {
+      item.minimum_stock = req.body.minimum_stock;
+    }
+    if (req.body.expiry_date !== undefined) {
+      item.expiry_date = req.body.expiry_date;
+    }
+    await item.save();
+    console.log(`Final item state: total_quantity = ${item.total_quantity}`);
+    
+    // Verify InventoryStock was created/updated
+    const stock = await InventoryStock.findOne({ item_id: item._id });
+    console.log(`InventoryStock after update:`, stock ? {
+      full_packages: stock.full_packages,
+      partial_quantity: stock.partial_quantity,
+      last_updated: stock.last_updated
+    } : 'Not found');
+    
+    res.json({ message: 'Item updated successfully', item, adjustment: adjustmentDetails });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error', details: err.message });
+  }
+});
+
+// Get the most recent InventoryStock for a given item_id
+app.get('/api/inventory-stock', async (req, res) => {
+  try {
+    const { item_id } = req.query;
+    if (!item_id) {
+      return res.status(400).json({ error: 'item_id is required' });
+    }
+    // Get the most recent InventoryStock for the item
+    const stock = await InventoryStock.findOne({ item_id }).sort({ last_updated: -1 });
+    if (!stock) {
+      return res.status(404).json({ error: 'No inventory stock found for this item' });
+    }
+    res.json(stock);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error', details: err.message });
+  }
+});
+
+// Update the full_packages for a given item_id in InventoryStock
+app.put('/api/inventory-stock/:item_id', async (req, res) => {
+  try {
+    const { item_id } = req.params;
+    const { full_packages, total_quantity } = req.body;
+    if (typeof full_packages !== 'number' || full_packages < 0) {
+      return res.status(400).json({ error: 'full_packages must be a non-negative number' });
+    }
+    
+    // Ensure InventoryStock record exists
+    let stock = await InventoryStock.findOne({ item_id });
+    if (!stock) {
+      stock = new InventoryStock({ 
+        item_id, 
+        full_packages: 0, 
+        partial_quantity: 0,
+        last_updated: new Date()
+      });
+    }
+    
+    // Update the stock
+    stock.full_packages = full_packages;
+    stock.last_updated = new Date();
+    await stock.save();
+    
+    // Create a correction InventoryAdjustment
+    const item = await Item.findById(item_id);
+    let quantity = 0;
+    if (item.item_type === 'weighable') {
+      quantity = typeof total_quantity === 'number' ? total_quantity : (item.weight_per_package * full_packages);
+    } else if (item.item_type === 'unit_based') {
+      quantity = typeof total_quantity === 'number' ? total_quantity : (item.units_per_package * full_packages);
+    } else {
+      quantity = full_packages;
+    }
+    await InventoryAdjustment.create({
+      item_id,
+      quantity,
+      adjustment_type: 'correction',
+      reason: 'Stock correction via edit',
+      status: 'completed',
+      adjustment_date: new Date()
+    });
+    res.json(stock);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error', details: err.message });
+  }
+});
+
+// Get all unique expense purposes
+app.get('/api/expenses/purposes', async (req, res) => {
+  try {
+    const purposes = await CashExpenditure.distinct('purpose');
+    res.status(200).json({ purposes });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch purposes', details: err.message });
+  }
+});
+
+// Get all unique request statuses
+app.get('/api/commodity-requests/statuses', async (req, res) => {
+  try {
+    const statuses = await CommodityRequest.distinct('status');
+    res.status(200).json({ statuses });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch statuses', details: err.message });
+  }
+});
+
+// Get all unique credit transaction payment statuses
+app.get('/api/credit-transactions/statuses', async (req, res) => {
+  try {
+    const statuses = await CreditTransaction.distinct('payment_status');
+    res.status(200).json({ statuses });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch payment statuses', details: err.message });
+  }
+});
+
+// Test endpoint to manually create InventoryStock record
+app.post('/api/inventory-stock/test/:item_id', async (req, res) => {
+  try {
+    const { item_id } = req.params;
+    const { quantity } = req.body;
+    
+    const item = await Item.findById(item_id);
+    if (!item) {
+      return res.status(404).json({ error: 'Item not found' });
+    }
+    
+    // Create a test adjustment
+    const adj = new InventoryAdjustment({
+      item_id: item._id,
+      quantity: quantity || 50,
+      adjustment_type: 'addition',
+      reason: 'Test adjustment',
+      status: 'completed',
+    });
+    await adj.save();
+    
+    // Process the adjustment
+    const stockResult = await InventoryStock.processAdjustment(adj);
+    
+    res.json({ 
+      message: 'Test completed',
+      adjustment: adj,
+      stock: stockResult
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Test failed', details: err.message });
+  }
+});
+
+// Update an expense (amount and purpose)
+app.put('/api/expenses/:id', async (req, res) => {
+  try {
+    const { amount, purpose } = req.body;
+    const updated = await CashExpenditure.findByIdAndUpdate(
+      req.params.id,
+      { amount, purpose },
+      { new: true }
+    );
+    if (!updated) return res.status(404).json({ error: 'Expense not found' });
+    res.json({ message: 'Expense updated successfully', expense: updated });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to update expense', details: error.message });
+  }
+});
+
+// Delete an expense
+app.delete('/api/expenses/:id', async (req, res) => {
+  try {
+    const deleted = await CashExpenditure.findByIdAndDelete(req.params.id);
+    if (!deleted) return res.status(404).json({ error: 'Expense not found' });
+    res.json({ message: 'Expense deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to delete expense', details: error.message });
+  }
+});
+
+// Update a commodity request
+app.put('/api/commodity-requests/:id', async (req, res) => {
+  try {
+    const {
+      commodity_name,
+      quantity,
+      customer_id,
+      customer_contact,
+      status,
+      requestType,
+      requested_date
+    } = req.body;
+
+    // Map requestType to product_type
+    let product_type = undefined;
+    if (requestType === 'Weight-Based') product_type = 'weight_based';
+    else if (requestType === 'Unit-Based') product_type = 'unit_based';
+
+    const update = {
+      commodity_name,
+      quantity_desired: quantity,
+      customer_id,
+      customer_contact,
+      status,
+      requested_date,
+    };
+    if (product_type) update.product_type = product_type;
+    // Remove undefined fields
+    Object.keys(update).forEach(key => update[key] === undefined && delete update[key]);
+
+    const updated = await CommodityRequest.findByIdAndUpdate(
+      req.params.id,
+      update,
+      { new: true }
+    );
+    if (!updated) return res.status(404).json({ error: 'Request not found' });
+    res.json({ message: 'Request updated successfully', request: updated });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to update request', details: error.message });
+  }
+});
+
+// Get a single commodity request by id
+app.get('/api/commodity-requests/:id', async (req, res) => {
+  try {
+    const request = await CommodityRequest.findById(req.params.id).populate({ path: 'customer_id', select: 'name phone' });
+    if (!request) return res.status(404).json({ error: 'Request not found' });
+    res.json(request);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch request', details: err.message });
+  }
+});
+
+// Delete a commodity request
+app.delete('/api/commodity-requests/:id', async (req, res) => {
+  try {
+    const deleted = await CommodityRequest.findByIdAndDelete(req.params.id);
+    if (!deleted) return res.status(404).json({ error: 'Request not found' });
+    res.json({ message: 'Request deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to delete request', details: error.message });
+  }
+});
+
+// Get profit report for a specific date
+app.get('/api/sales/profit-report', async (req, res) => {
+  try {
+    const dateStr = req.query.date;
+    if (!dateStr) return res.status(400).json({ error: 'Date is required' });
+    const date = new Date(dateStr);
+    const start = new Date(date);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(date);
+    end.setHours(23, 59, 59, 999);
+
+    // Find all sales for the date
+    const sales = await Sale.find({ date: { $gte: start, $lte: end } }, '_id');
+    const saleIds = sales.map(s => s._id);
+    if (saleIds.length === 0) return res.json({ items: [], totalCost: 0, totalRevenue: 0, profit: 0 });
+
+    // Find all sale items for these sales
+    const saleItems = await SaleItem.find({ sale_id: { $in: saleIds } });
+    if (saleItems.length === 0) return res.json({ items: [], totalCost: 0, totalRevenue: 0, profit: 0 });
+
+    // Get all involved item ids
+    const itemIds = [...new Set(saleItems.map(si => si.item_id.toString()))];
+    const items = await Item.find({ _id: { $in: itemIds } });
+    const itemMap = {};
+    items.forEach(item => {
+      let purchasePricePerUnit = 0;
+      if (item.item_type === 'weighable' && item.weight_per_package && item.purchase_price_per_package) {
+        purchasePricePerUnit = item.purchase_price_per_package / item.weight_per_package;
+      } else if (item.item_type === 'unit_based' && item.units_per_package && item.purchase_price_per_package) {
+        purchasePricePerUnit = item.purchase_price_per_package / item.units_per_package;
+      } else if (item.purchase_price_per_package) {
+        purchasePricePerUnit = item.purchase_price_per_package;
+      }
+      itemMap[item._id.toString()] = {
+        name: item.name,
+        buyingPrice: purchasePricePerUnit,
+        sellingPrice: item.selling_price_per_unit || 0
+      };
+    });
+
+    // Aggregate by product
+    const productMap = {};
+    saleItems.forEach(si => {
+      const itemInfo = itemMap[si.item_id.toString()];
+      if (!itemInfo) return;
+      if (!productMap[si.item_id.toString()]) {
+        productMap[si.item_id.toString()] = {
+          product: itemInfo.name,
+          quantity: 0,
+          buyingPrice: itemInfo.buyingPrice,
+          sellingPrice: si.unit_price || itemInfo.sellingPrice,
+          totalCost: 0,
+          totalRevenue: 0,
+          profit: 0
+        };
+      }
+      const row = productMap[si.item_id.toString()];
+      row.quantity += si.quantity_sold;
+      row.totalCost += itemInfo.buyingPrice * si.quantity_sold;
+      row.totalRevenue += (si.unit_price || itemInfo.sellingPrice) * si.quantity_sold;
+      row.profit += ((si.unit_price || itemInfo.sellingPrice) - itemInfo.buyingPrice) * si.quantity_sold;
+    });
+    const itemsArr = Object.values(productMap);
+    const totalCost = itemsArr.reduce((sum, r) => sum + r.totalCost, 0);
+    const totalRevenue = itemsArr.reduce((sum, r) => sum + r.totalRevenue, 0);
+    const profit = itemsArr.reduce((sum, r) => sum + r.profit, 0);
+    res.json({ items: itemsArr, totalCost: Math.round(totalCost * 100) / 100, totalRevenue: Math.round(totalRevenue * 100) / 100, profit: Math.round(profit * 100) / 100 });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch profit report' });
+  }
+});
+
+// Get customers and their purchase amounts for a specific date
+app.get('/api/sales/customers-report', async (req, res) => {
+  try {
+    const dateStr = req.query.date;
+    if (!dateStr) return res.status(400).json({ error: 'Date is required' });
+    const date = new Date(dateStr);
+    const start = new Date(date);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(date);
+    end.setHours(23, 59, 59, 999);
+
+    // Find all sales for the date
+    const sales = await Sale.find({ date: { $gte: start, $lte: end } });
+    if (!sales.length) return res.json({ customers: [] });
+
+    // Aggregate by customer name
+    const customerMap = {};
+    sales.forEach(sale => {
+      const name = (sale.customer_info && sale.customer_info.name) ? sale.customer_info.name : 'Unknown Customer';
+      if (!customerMap[name]) customerMap[name] = 0;
+      customerMap[name] += sale.grand_total || 0;
+    });
+    const customers = Object.entries(customerMap).map(([name, amount]) => ({ name, amount }));
+    res.json({ customers });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch customers report' });
+  }
+});
+
+// Get sales report for a specific date
+app.get('/api/sales/sales-report', async (req, res) => {
+  try {
+    const dateStr = req.query.date;
+    if (!dateStr) return res.status(400).json({ error: 'Date is required' });
+    const date = new Date(dateStr);
+    const start = new Date(date);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(date);
+    end.setHours(23, 59, 59, 999);
+
+    // Find all sales for the date, populate items and item details
+    const sales = await Sale.find({ date: { $gte: start, $lte: end } })
+      .populate({
+        path: 'items',
+        populate: {
+          path: 'item_id',
+          select: 'name base_unit'
+        }
+      });
+
+    // Format the response
+    const salesArr = sales.map(sale => ({
+      customerName: (sale.customer_info && sale.customer_info.name) ? sale.customer_info.name : 'Unknown Customer',
+      items: (sale.items || []).map(si => ({
+        name: si.item_id && si.item_id.name ? si.item_id.name : 'Unknown',
+        quantity: si.quantity_sold,
+        unit: si.item_id && si.item_id.base_unit ? si.item_id.base_unit : ''
+      })),
+      totalAmount: sale.grand_total || 0
+    }));
+    res.json({ sales: salesArr });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch sales report' });
+  }
+});
+
+// Get paginated recent sales with profit
+app.get('/api/sales/recent', async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 4;
+    const skip = (page - 1) * limit;
+    let filter = {};
+    if (req.query.date) {
+      const date = new Date(req.query.date);
+      const start = new Date(date);
+      start.setHours(0, 0, 0, 0);
+      const end = new Date(date);
+      end.setHours(23, 59, 59, 999);
+      filter.date = { $gte: start, $lte: end };
+    }
+    const total = await Sale.countDocuments(filter);
+    const sales = await Sale.find(filter)
+      .sort({ date: -1, createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .populate({
+        path: 'items',
+        populate: {
+          path: 'item_id',
+          select: 'name base_unit purchase_price_per_package weight_per_package units_per_package item_type'
+        }
+      });
+    // Calculate profit for each sale
+    const salesArr = sales.map(sale => {
+      let profit = 0;
+      const itemsArr = (sale.items || []).map(si => {
+        let purchasePricePerUnit = 0;
+        const item = si.item_id;
+        if (item) {
+          if (item.item_type === 'weighable' && item.weight_per_package && item.purchase_price_per_package) {
+            purchasePricePerUnit = item.purchase_price_per_package / item.weight_per_package;
+          } else if (item.item_type === 'unit_based' && item.units_per_package && item.purchase_price_per_package) {
+            purchasePricePerUnit = item.purchase_price_per_package / item.units_per_package;
+          } else if (item.purchase_price_per_package) {
+            purchasePricePerUnit = item.purchase_price_per_package;
+          }
+        }
+        const itemProfit = ((si.unit_price || 0) - purchasePricePerUnit) * (si.quantity_sold || 0);
+        profit += itemProfit;
+        return {
+          name: item && item.name ? item.name : 'Unknown',
+          quantity: si.quantity_sold,
+          unit: item && item.base_unit ? item.base_unit : ''
+        };
+      });
+      return {
+        customerName: (sale.customer_info && sale.customer_info.name) ? sale.customer_info.name : 'Unknown Customer',
+        items: itemsArr,
+        date: sale.date ? sale.date.toISOString().split('T')[0] : '',
+        total: sale.grand_total || 0,
+        profit: Math.round(profit * 100) / 100
+      };
+    });
+    res.json({ sales: salesArr, total });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch recent sales' });
+  }
+});
+
+// Get daily sales totals for the last N days, ending at endDate (default today)
+app.get('/api/sales/daily-totals', async (req, res) => {
+  try {
+    const days = parseInt(req.query.days) || 7;
+    let end = req.query.endDate ? new Date(req.query.endDate) : new Date();
+    end.setHours(23, 59, 59, 999);
+    const start = new Date(end);
+    start.setHours(0, 0, 0, 0);
+    start.setDate(start.getDate() - (days - 1));
+    // Group sales by day
+    const result = await Sale.aggregate([
+      { $match: { date: { $gte: start, $lte: end } } },
+      { $group: {
+        _id: {
+          $dateToString: { format: "%Y-%m-%d", date: "$date" }
+        },
+        total: { $sum: "$grand_total" }
+      }},
+      { $sort: { _id: -1 } }
+    ]);
+    // Fill in missing days with 0
+    const totalsMap = {};
+    result.forEach(r => { totalsMap[r._id] = r.total; });
+    const daysArr = [];
+    for (let i = 0; i < days; i++) {
+      const d = new Date(end);
+      d.setDate(d.getDate() - i);
+      const key = d.toISOString().split('T')[0];
+      daysArr.push({ date: key, total: totalsMap[key] || 0 });
+    }
+    res.json({ days: daysArr });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch daily sales totals' });
+  }
+});
+
+// Get all possible 7-day date ranges for sales
+app.get('/api/sales/date-ranges', async (req, res) => {
+  try {
+    const firstSale = await Sale.findOne().sort({ date: 1 });
+    const lastSale = await Sale.findOne().sort({ date: -1 });
+    if (!firstSale || !lastSale) return res.json({ ranges: [] });
+    const startDate = new Date(firstSale.date);
+    startDate.setHours(0, 0, 0, 0);
+    const endDate = new Date(lastSale.date);
+    endDate.setHours(23, 59, 59, 999);
+    const ranges = [];
+    let rangeEnd = new Date(endDate);
+    while (rangeEnd >= startDate) {
+      let rangeStart = new Date(rangeEnd);
+      rangeStart.setDate(rangeEnd.getDate() - 6);
+      if (rangeStart < startDate) rangeStart = new Date(startDate);
+      ranges.push({
+        start: rangeStart.toISOString().slice(0, 10),
+        end: rangeEnd.toISOString().slice(0, 10)
+      });
+      rangeEnd.setDate(rangeEnd.getDate() - 7);
+    }
+    res.json({ ranges });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to compute date ranges' });
+  }
+});
+
+// Get top selling items (for analytics)
+app.get('/api/sales/top-items', async (req, res) => {
+  try {
+    const alpha = 1;
+    const beta = 0.001;
+    const { year, month } = req.query;
+    let matchStage = {};
+    if (year && month) {
+      // Calculate start and end dates for the month
+      const start = new Date(Number(year), Number(month) - 1, 1);
+      const end = new Date(Number(year), Number(month), 1);
+      matchStage = { date: { $gte: start, $lt: end } };
+    }
+    let saleIdFilter = {};
+    if (year && month) {
+      // Find sales in the month
+      const Sale = require('./models/Sale');
+      const salesInMonth = await Sale.find(matchStage, '_id');
+      const saleIds = salesInMonth.map(s => s._id);
+      saleIdFilter = { sale_id: { $in: saleIds } };
+    }
+    const topItems = await SaleItem.aggregate([
+      ...(year && month ? [{ $match: saleIdFilter }] : []),
+      {
+        $group: {
+          _id: '$item_id',
+          quantity: { $sum: '$quantity_sold' },
+          cost: { $sum: '$total_price' }
+        }
+      },
+      {
+        $addFields: {
+          score: { $add: [
+            { $multiply: ['$quantity', alpha] },
+            { $multiply: ['$cost', beta] }
+          ] }
+        }
+      },
+      { $sort: { score: -1 } },
+      { $limit: 10 },
+      {
+        $lookup: {
+          from: 'items',
+          localField: '_id',
+          foreignField: '_id',
+          as: 'item_info'
+        }
+      },
+      { $unwind: '$item_info' },
+      {
+        $project: {
+          _id: 0,
+          item_id: '$_id',
+          item_name: '$item_info.name',
+          quantity: 1,
+          cost: 1,
+          score: 1
+        }
+      }
+    ]);
+    res.json(topItems);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch top selling items' });
+  }
+});
+
+// Get monthly sales totals for all months
+app.get('/api/sales/monthly-totals', async (req, res) => {
+  try {
+    const result = await Sale.aggregate([
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m", date: "$date" } },
+          total: { $sum: "$grand_total" }
+        }
+      },
+      { $sort: { _id: 1 } }
+    ]);
+    // Format as [{ month: 'YYYY-MM', total: ... }, ...]
+    const months = result.map(r => ({ month: r._id, total: r.total }));
+    res.json({ months });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch monthly sales totals' });
+  }
+});
+
+// Get count of active credit customers (with at least one active credit transaction)
+app.get('/api/credit-customers/count', async (req, res) => {
+  try {
+    // Find unique customer_ids in CreditTransaction with non-paid status
+    const activeCreditCustomerIds = await CreditTransaction.distinct('customer_id', { payment_status: { $ne: 'paid' } });
+    console.log('Active credit customer IDs:', activeCreditCustomerIds);
+    // Filter for active customers
+    const count = await Customer.countDocuments({ _id: { $in: activeCreditCustomerIds }, is_active: true });
+    console.log('Active credit customers count:', count);
+    res.status(200).json({ count });
+  } catch (err) {
+    console.error('Error in /api/credit-customers/count:', err);
+    res.status(500).json({ error: 'Failed to fetch active credit customers count', details: err.message });
+  }
+});
+
+// Get total outstanding amount for all active credit customers
+app.get('/api/credit-customers/total-outstanding', async (req, res) => {
+  try {
+    // Find unique customer_ids in CreditTransaction with non-paid status
+    const activeCreditCustomerIds = await CreditTransaction.distinct('customer_id', { payment_status: { $ne: 'paid' } });
+    // Get all active customers
+    const customers = await Customer.find({ _id: { $in: activeCreditCustomerIds }, is_active: true });
+    // For each customer, sum their non-paid credit transactions
+    let totalOutstanding = 0;
+    for (const customer of customers) {
+      const transactions = await CreditTransaction.find({ customer_id: customer._id, payment_status: { $ne: 'paid' } });
+      for (const tx of transactions) {
+        totalOutstanding += (tx.total_amount - (tx.amount_paid || 0));
+      }
+    }
+    res.status(200).json({ totalOutstanding });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch total outstanding', details: err.message });
+  }
+});
+
+// Get total overdue amount for all active credit customers
+app.get('/api/credit-customers/overdue-amount', async (req, res) => {
+  try {
+    const now = new Date();
+    // Find all overdue credit transactions (not paid, due date passed)
+    const overdueTransactions = await CreditTransaction.find({
+      payment_status: { $ne: 'paid' },
+      agreed_repayment_date: { $lt: now }
+    });
+    // Get only active customers
+    const customerIds = overdueTransactions.map(tx => tx.customer_id);
+    const activeCustomers = await Customer.find({ _id: { $in: customerIds }, is_active: true });
+    const activeCustomerIds = new Set(activeCustomers.map(c => c._id.toString()));
+    // Sum overdue balances for active customers
+    let totalOverdue = 0;
+    for (const tx of overdueTransactions) {
+      if (activeCustomerIds.has(tx.customer_id.toString())) {
+        totalOverdue += (tx.total_amount - (tx.amount_paid || 0));
+      }
+    }
+    res.status(200).json({ totalOverdue });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch overdue amount', details: err.message });
+  }
+});
+
+// Get all credit transactions with customer and sale info (including sale items and item details)
+app.get('/api/credit-transactions/all', async (req, res) => {
+  try {
+    const transactions = await CreditTransaction.find()
+      .populate({ path: 'customer_id', select: 'name phone email' })
+      .populate({ 
+        path: 'sale_id', 
+        select: 'items',
+        populate: {
+          path: 'items',
+          populate: { path: 'item_id', select: 'name' }
+        }
+      });
+    res.status(200).json(transactions);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch credit transactions', details: err.message });
+  }
+});
+
+// Get monthly totals for credit issued and payments
+app.get('/api/credit/monthly-totals', async (req, res) => {
+  try {
+    // Aggregate credit issued by month
+    const issued = await CreditTransaction.aggregate([
+      {
+        $group: {
+          _id: { year: { $year: "$transaction_date" }, month: { $month: "$transaction_date" } },
+          totalIssued: { $sum: "$total_amount" }
+        }
+      },
+      { $sort: { '_id.year': 1, '_id.month': 1 } }
+    ]);
+    // Aggregate payments by month
+    const payments = await Repayment.aggregate([
+      {
+        $group: {
+          _id: { year: { $year: "$payment_date" }, month: { $month: "$payment_date" } },
+          totalPaid: { $sum: "$amount_paid" }
+        }
+      },
+      { $sort: { '_id.year': 1, '_id.month': 1 } }
+    ]);
+    // Merge results by month
+    const resultMap = {};
+    issued.forEach(i => {
+      const key = `${i._id.year}-${String(i._id.month).padStart(2, '0')}`;
+      resultMap[key] = { year: i._id.year, month: i._id.month, issued: i.totalIssued, paid: 0 };
+    });
+    payments.forEach(p => {
+      const key = `${p._id.year}-${String(p._id.month).padStart(2, '0')}`;
+      if (!resultMap[key]) resultMap[key] = { year: p._id.year, month: p._id.month, issued: 0, paid: 0 };
+      resultMap[key].paid = p.totalPaid;
+    });
+    // Convert to sorted array
+    const result = Object.values(resultMap).sort((a, b) => (a.year - b.year) || (a.month - b.month));
+    res.status(200).json(result);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch monthly credit totals', details: err.message });
+  }
+});
+
+// Start the server
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
