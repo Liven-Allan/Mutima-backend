@@ -263,6 +263,79 @@ app.get('/api/items', async (req, res) => {
   }
 });
 
+// --- API to get total number of SKUs (items) ---
+app.get('/api/items/sku-count', async (req, res) => {
+  try {
+    const count = await require('./models/Item').countDocuments();
+    console.log('[DEBUG] SKU count:', count);
+    res.json({ skuCount: count });
+  } catch (err) {
+    console.error('[DEBUG] Error fetching SKU count:', err);
+    res.status(500).json({ error: 'Failed to fetch SKU count' });
+  }
+});
+
+// --- API to get count of low stock items ---
+app.get('/api/items/low-stock-count', async (req, res) => {
+  try {
+    const count = await require('./models/Item').countDocuments({ $expr: { $lte: ["$total_quantity", "$minimum_stock"] } });
+    console.log('[DEBUG] Low stock items count:', count);
+    res.json({ lowStockCount: count });
+  } catch (err) {
+    console.error('[DEBUG] Error fetching low stock count:', err);
+    res.status(500).json({ error: 'Failed to fetch low stock count' });
+  }
+});
+
+// --- API to get count of recently received items (unique items with 'addition' adjustment in last 7 days) ---
+app.get('/api/items/recently-received-count', async (req, res) => {
+  try {
+    const InventoryAdjustment = require('./models/InventoryAdjustment');
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    const recentAdjustments = await InventoryAdjustment.aggregate([
+      { $match: { adjustment_type: 'addition', adjustment_date: { $gte: sevenDaysAgo } } },
+      { $group: { _id: '$item_id' } }
+    ]);
+    const count = recentAdjustments.length;
+    console.log('[DEBUG] Recently received items count:', count);
+    res.json({ recentlyReceivedCount: count });
+  } catch (err) {
+    console.error('[DEBUG] Error fetching recently received count:', err);
+    res.status(500).json({ error: 'Failed to fetch recently received count' });
+  }
+});
+
+// --- API to get stock table data for Stock Analysis modal ---
+app.get('/api/items/stock-table', async (req, res) => {
+  try {
+    const Item = require('./models/Item');
+    const InventoryAdjustment = require('./models/InventoryAdjustment');
+    const items = await Item.find();
+    const results = await Promise.all(items.map(async item => {
+      // Find latest 'addition' adjustment for this item
+      const lastAddition = await InventoryAdjustment.findOne({ item_id: item._id, adjustment_type: 'addition' })
+        .sort({ adjustment_date: -1 });
+      const lastReceived = lastAddition ? lastAddition.adjustment_date.toISOString().slice(0, 10) : null;
+      const purchasePricePerUnit = item.item_type === 'weighable'
+        ? (item.purchase_price_per_package / item.weight_per_package)
+        : (item.purchase_price_per_package / item.units_per_package);
+      return {
+        name: item.name,
+        currentStock: item.total_quantity,
+        unitPrice: item.selling_price_per_unit,
+        totalCost: item.total_quantity * purchasePricePerUnit,
+        lastReceived
+      };
+    }));
+    res.json({ items: results });
+  } catch (err) {
+    console.error('[DEBUG] Error fetching stock table:', err);
+    res.status(500).json({ error: 'Failed to fetch stock table' });
+  }
+});
+
+
 // Get item by ID
 app.get('/api/items/:id', async (req, res) => {
   try {
@@ -2317,6 +2390,66 @@ app.get('/api/sales/payment-statuses', (req, res) => {
     res.json({ statuses });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch payment statuses' });
+  }
+});
+
+// --- API to get count of low stock items ---
+app.get('/api/items/low-stock-count', async (req, res) => {
+  try {
+    const count = await require('./models/Item').countDocuments({ $expr: { $lte: ["$total_quantity", "$minimum_stock"] } });
+    console.log('[DEBUG] Low stock items count:', count);
+    res.json({ lowStockCount: count });
+  } catch (err) {
+    console.error('[DEBUG] Error fetching low stock count:', err);
+    res.status(500).json({ error: 'Failed to fetch low stock count' });
+  }
+});
+
+// --- API to get count of recently received items (unique items with 'addition' adjustment in last 7 days) ---
+app.get('/api/items/recently-received-count', async (req, res) => {
+  try {
+    const InventoryAdjustment = require('./models/InventoryAdjustment');
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    const recentAdjustments = await InventoryAdjustment.aggregate([
+      { $match: { adjustment_type: 'addition', adjustment_date: { $gte: sevenDaysAgo } } },
+      { $group: { _id: '$item_id' } }
+    ]);
+    const count = recentAdjustments.length;
+    console.log('[DEBUG] Recently received items count:', count);
+    res.json({ recentlyReceivedCount: count });
+  } catch (err) {
+    console.error('[DEBUG] Error fetching recently received count:', err);
+    res.status(500).json({ error: 'Failed to fetch recently received count' });
+  }
+});
+
+// --- API to get stock table data for Stock Analysis modal ---
+app.get('/api/items/stock-table', async (req, res) => {
+  try {
+    const Item = require('./models/Item');
+    const InventoryAdjustment = require('./models/InventoryAdjustment');
+    const items = await Item.find();
+    const results = await Promise.all(items.map(async item => {
+      // Find latest 'addition' adjustment for this item
+      const lastAddition = await InventoryAdjustment.findOne({ item_id: item._id, adjustment_type: 'addition' })
+        .sort({ adjustment_date: -1 });
+      const lastReceived = lastAddition ? lastAddition.adjustment_date.toISOString().slice(0, 10) : null;
+      const purchasePricePerUnit = item.item_type === 'weighable'
+        ? (item.purchase_price_per_package / item.weight_per_package)
+        : (item.purchase_price_per_package / item.units_per_package);
+      return {
+        name: item.name,
+        currentStock: item.total_quantity,
+        unitPrice: item.selling_price_per_unit,
+        totalCost: item.total_quantity * purchasePricePerUnit,
+        lastReceived
+      };
+    }));
+    res.json({ items: results });
+  } catch (err) {
+    console.error('[DEBUG] Error fetching stock table:', err);
+    res.status(500).json({ error: 'Failed to fetch stock table' });
   }
 });
 
