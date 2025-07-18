@@ -1757,10 +1757,11 @@ app.get('/api/sales/top-items', async (req, res) => {
   }
 });
 
-// Get monthly sales totals for all months
+// Get monthly sales totals for all months (completed sales only)
 app.get('/api/sales/monthly-totals', async (req, res) => {
   try {
     const result = await Sale.aggregate([
+      { $match: { status: 'completed' } },
       {
         $group: {
           _id: { $dateToString: { format: "%Y-%m", date: "$date" } },
@@ -1773,7 +1774,7 @@ app.get('/api/sales/monthly-totals', async (req, res) => {
     const months = result.map(r => ({ month: r._id, total: r.total }));
     res.json({ months });
   } catch (err) {
-    console.error(err);
+    console.error('Error fetching monthly sales totals:', err);
     res.status(500).json({ error: 'Failed to fetch monthly sales totals' });
   }
 });
@@ -1899,6 +1900,401 @@ app.get('/api/credit/monthly-totals', async (req, res) => {
     res.status(200).json(result);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch monthly credit totals', details: err.message });
+  }
+});
+
+// --- API to get Stock Inventory Value ---
+app.get('/api/stock-inventory-value', async (req, res) => {
+  try {
+    // Get all InventoryStock records, populate item_id
+    const stocks = await InventoryStock.find().populate('item_id');
+    let totalStockValue = 0;
+    let latestDate = null;
+
+    for (const stock of stocks) {
+      const item = stock.item_id;
+      if (!item) continue;
+      let itemValue = 0;
+      if (item.item_type === 'weighable') {
+        const totalKg = (stock.full_packages * item.weight_per_package) + stock.partial_quantity;
+        const pricePerKg = item.purchase_price_per_package / item.weight_per_package;
+        itemValue = totalKg * pricePerKg;
+      } else if (item.item_type === 'unit_based') {
+        const totalUnits = (stock.full_packages * item.units_per_package) + stock.partial_quantity;
+        const pricePerUnit = item.purchase_price_per_package / item.units_per_package;
+        itemValue = totalUnits * pricePerUnit;
+      } else {
+        itemValue = stock.full_packages * item.purchase_price_per_package;
+      }
+      totalStockValue += itemValue;
+      // Track latest date
+      const stockDate = stock.last_updated || stock.updatedAt || stock.createdAt;
+      if (!latestDate || (stockDate && stockDate > latestDate)) {
+        latestDate = stockDate;
+      }
+    }
+    res.json({
+      totalStockValue,
+      latestDate: latestDate ? latestDate.toISOString().slice(0, 10) : null
+    });
+  } catch (err) {
+    console.error('Error calculating stock inventory value:', err);
+    res.status(500).json({ error: 'Failed to calculate stock inventory value' });
+  }
+});
+
+// --- API to get Inventory Details for a specific date ---
+app.get('/api/inventory-details', async (req, res) => {
+  try {
+    const dateParam = req.query.date;
+    let targetDate = dateParam ? new Date(dateParam) : null;
+    if (targetDate) {
+      // Set to end of day for inclusivity
+      targetDate.setHours(23, 59, 59, 999);
+    }
+
+    // Get all items
+    const items = await Item.find();
+    const results = [];
+
+    for (const item of items) {
+      // Find the latest InventoryStock for this item as of the target date
+      let stockQuery = { item_id: item._id };
+      if (targetDate) {
+        stockQuery['last_updated'] = { $lte: targetDate };
+      }
+      // Find the latest stock record as of the date
+      const stock = await InventoryStock.findOne(stockQuery).sort({ last_updated: -1, updatedAt: -1 });
+      if (!stock) continue;
+      let amount = 0;
+      let quantity = 0;
+      if (item.item_type === 'weighable') {
+        quantity = (stock.full_packages * item.weight_per_package) + stock.partial_quantity;
+        const pricePerKg = item.purchase_price_per_package / item.weight_per_package;
+        amount = quantity * pricePerKg;
+      } else if (item.item_type === 'unit_based') {
+        quantity = (stock.full_packages * item.units_per_package) + stock.partial_quantity;
+        const pricePerUnit = item.purchase_price_per_package / item.units_per_package;
+        amount = quantity * pricePerUnit;
+      } else {
+        quantity = stock.full_packages;
+        amount = quantity * item.purchase_price_per_package;
+      }
+      if (amount > 0) {
+        results.push({ name: item.name, quantity, amount });
+      }
+    }
+    res.json({ details: results });
+  } catch (err) {
+    console.error('Error fetching inventory details:', err);
+    res.status(500).json({ error: 'Failed to fetch inventory details' });
+  }
+});
+
+// --- API to get Today's Expenses ---
+app.get('/api/todays-expenses', async (req, res) => {
+  try {
+    const today = new Date();
+    const start = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), 0, 0, 0, 0));
+    const end = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), 23, 59, 59, 999));
+    const expenses = await CashExpenditure.aggregate([
+      {
+        $match: {
+          expenditure_date: { $gte: start, $lte: end }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: "$amount" }
+        }
+      }
+    ]);
+    const totalExpenses = expenses.length > 0 ? expenses[0].total : 0;
+    res.json({ totalExpenses });
+  } catch (err) {
+    console.error('Error fetching today\'s expenses:', err);
+    res.status(500).json({ error: 'Failed to fetch today\'s expenses' });
+  }
+});
+
+// --- API to get Expenses Details for a specific date ---
+app.get('/api/expenses-details', async (req, res) => {
+  try {
+    let dateParam = req.query.date;
+    let targetDate = dateParam ? new Date(dateParam) : new Date();
+    const start = new Date(Date.UTC(targetDate.getUTCFullYear(), targetDate.getUTCMonth(), targetDate.getUTCDate(), 0, 0, 0, 0));
+    const end = new Date(Date.UTC(targetDate.getUTCFullYear(), targetDate.getUTCMonth(), targetDate.getUTCDate(), 23, 59, 59, 999));
+    const expenses = await CashExpenditure.find({
+      expenditure_date: { $gte: start, $lte: end }
+    }).sort({ expenditure_date: -1 });
+    const details = expenses.map(e => ({ purpose: e.purpose, amount: e.amount }));
+    res.json({ details });
+  } catch (err) {
+    console.error('Error fetching expenses details:', err);
+    res.status(500).json({ error: 'Failed to fetch expenses details' });
+  }
+});
+
+// --- API to get Today's Cash Available (sum of sales for today) ---
+app.get('/api/todays-cash-available', async (req, res) => {
+  try {
+    const today = new Date();
+    const start = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), 0, 0, 0, 0));
+    const end = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), 23, 59, 59, 999));
+    const sales = await Sale.aggregate([
+      {
+        $match: {
+          date: { $gte: start, $lte: end },
+          status: 'completed'
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: "$grand_total" }
+        }
+      }
+    ]);
+    const totalCashAvailable = sales.length > 0 ? sales[0].total : 0;
+    res.json({ totalCashAvailable });
+  } catch (err) {
+    console.error('Error fetching today\'s cash available:', err);
+    res.status(500).json({ error: 'Failed to fetch today\'s cash available' });
+  }
+});
+
+// --- API to get Cash Available Details for a specific date ---
+app.get('/api/cash-available-details', async (req, res) => {
+  try {
+    let dateParam = req.query.date;
+    let targetDate = dateParam ? new Date(dateParam) : new Date();
+    const start = new Date(Date.UTC(targetDate.getUTCFullYear(), targetDate.getUTCMonth(), targetDate.getUTCDate(), 0, 0, 0, 0));
+    const end = new Date(Date.UTC(targetDate.getUTCFullYear(), targetDate.getUTCMonth(), targetDate.getUTCDate(), 23, 59, 59, 999));
+    // Find all completed sales for the date
+    const sales = await Sale.find({
+      date: { $gte: start, $lte: end },
+      status: 'completed'
+    }).sort({ date: -1 });
+    // For each sale, get items and customer name
+    const results = [];
+    for (const sale of sales) {
+      // Get customer name
+      let customerName = '';
+      if (sale.customer_info && sale.customer_info.name) {
+        customerName = sale.customer_info.name;
+      } else if (sale.customer_id) {
+        const customer = await Customer.findById(sale.customer_id);
+        customerName = customer ? customer.name : '';
+      }
+      // Get items for this sale
+      const saleItems = await SaleItem.find({ sale_id: sale._id }).populate('item_id');
+      const itemsStr = saleItems.map(item => {
+        const itemName = item.item_id && item.item_id.name ? item.item_id.name : 'Unknown';
+        return `${itemName} (${item.quantity_sold})`;
+      }).join(', ');
+      results.push({
+        customerName,
+        items: itemsStr,
+        totalAmount: sale.grand_total
+      });
+    }
+    res.json({ details: results });
+  } catch (err) {
+    console.error('Error fetching cash available details:', err);
+    res.status(500).json({ error: 'Failed to fetch cash available details' });
+  }
+});
+
+// --- API to get Cash Flow Overview for the last 7 days ---
+app.get('/api/cash-flow-overview', async (req, res) => {
+  try {
+    const days = 7;
+    const labels = [];
+    const cashIn = [];
+    const cashOut = [];
+    const today = new Date();
+    // Go from oldest to newest
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() - i));
+      const start = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0, 0));
+      const end = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 23, 59, 59, 999));
+      const label = d.toISOString().slice(0, 10);
+      labels.push(label);
+      // Cash In: sum of sales (grand_total) for the day
+      const sales = await Sale.aggregate([
+        { $match: { date: { $gte: start, $lte: end }, status: 'completed' } },
+        { $group: { _id: null, total: { $sum: "$grand_total" } } }
+      ]);
+      cashIn.push(sales.length > 0 ? sales[0].total : 0);
+      // Cash Out: sum of expenses for the day
+      const expenses = await CashExpenditure.aggregate([
+        { $match: { expenditure_date: { $gte: start, $lte: end } } },
+        { $group: { _id: null, total: { $sum: "$amount" } } }
+      ]);
+      cashOut.push(expenses.length > 0 ? expenses[0].total : 0);
+    }
+    res.json({ labels, cashIn, cashOut });
+  } catch (err) {
+    console.error('Error fetching cash flow overview:', err);
+    res.status(500).json({ error: 'Failed to fetch cash flow overview' });
+  }
+});
+
+// --- API to get Total Revenue for the current or selected month ---
+app.get('/api/financial-report/total-revenue', async (req, res) => {
+  try {
+    let { month } = req.query;
+    let start, end;
+    if (month) {
+      const [year, m] = month.split('-');
+      start = new Date(Date.UTC(Number(year), Number(m) - 1, 1, 0, 0, 0, 0));
+      end = new Date(Date.UTC(Number(year), Number(m), 0, 23, 59, 59, 999));
+    } else {
+      const now = new Date();
+      start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
+      end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0, 23, 59, 59, 999));
+    }
+    const sales = await Sale.aggregate([
+      {
+        $match: {
+          date: { $gte: start, $lte: end },
+          status: 'completed'
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: "$grand_total" }
+        }
+      }
+    ]);
+    const totalRevenue = sales.length > 0 ? sales[0].total : 0;
+    res.json({ totalRevenue });
+  } catch (err) {
+    console.error('Error fetching total revenue:', err);
+    res.status(500).json({ error: 'Failed to fetch total revenue' });
+  }
+});
+
+// --- API to get Total Expenses for the current or selected month ---
+app.get('/api/financial-report/total-expenses', async (req, res) => {
+  try {
+    let { month } = req.query;
+    let start, end;
+    if (month) {
+      const [year, m] = month.split('-');
+      start = new Date(Date.UTC(Number(year), Number(m) - 1, 1, 0, 0, 0, 0));
+      end = new Date(Date.UTC(Number(year), Number(m), 0, 23, 59, 59, 999));
+    } else {
+      const now = new Date();
+      start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
+      end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0, 23, 59, 59, 999));
+    }
+    const expenses = await CashExpenditure.aggregate([
+      {
+        $match: {
+          expenditure_date: { $gte: start, $lte: end }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: "$amount" }
+        }
+      }
+    ]);
+    const totalExpenses = expenses.length > 0 ? expenses[0].total : 0;
+    res.json({ totalExpenses });
+  } catch (err) {
+    console.error('Error fetching total expenses:', err);
+    res.status(500).json({ error: 'Failed to fetch total expenses' });
+  }
+});
+
+// --- API to get Net Profit for the current or selected month ---
+app.get('/api/financial-report/net-profit', async (req, res) => {
+  try {
+    let { month } = req.query;
+    let start, end;
+    if (month) {
+      const [year, m] = month.split('-');
+      start = new Date(Date.UTC(Number(year), Number(m) - 1, 1, 0, 0, 0, 0));
+      end = new Date(Date.UTC(Number(year), Number(m), 0, 23, 59, 59, 999));
+    } else {
+      const now = new Date();
+      start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
+      end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0, 23, 59, 59, 999));
+    }
+    // Find all completed sales for the month
+    const sales = await Sale.find({
+      date: { $gte: start, $lte: end },
+      status: 'completed'
+    });
+    let netProfit = 0;
+    for (const sale of sales) {
+      // Get all sale items for this sale
+      const saleItems = await SaleItem.find({ sale_id: sale._id }).populate('item_id');
+      for (const item of saleItems) {
+        // Profit per item: (unit_price - purchase_price_per_unit) * quantity_sold
+        const purchasePrice = item.item_id && item.item_id.purchase_price_per_unit !== undefined
+          ? item.item_id.purchase_price_per_unit
+          : (item.item_id && item.item_id.purchase_price_per_package && item.item_id.units_per_package
+            ? item.item_id.purchase_price_per_package / item.item_id.units_per_package
+            : 0);
+        const profit = (item.unit_price - purchasePrice) * item.quantity_sold;
+        netProfit += profit;
+      }
+    }
+    res.json({ netProfit });
+  } catch (err) {
+    console.error('Error fetching net profit:', err);
+    res.status(500).json({ error: 'Failed to fetch net profit' });
+  }
+});
+
+// --- API to get Monthly Profit Trend for the last 12 months ---
+app.get('/api/financial-report/monthly-profit-trend', async (req, res) => {
+  try {
+    const now = new Date();
+    const months = [];
+    // Go from current month backward 12 times
+    for (let i = 0; i < 12; i++) {
+      const year = now.getUTCFullYear();
+      const month = now.getUTCMonth() - i;
+      // Calculate correct year/month for negative months
+      const d = new Date(Date.UTC(year, month, 1));
+      const label = d.toISOString().slice(0, 7); // YYYY-MM
+      const start = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1, 0, 0, 0, 0));
+      const end = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0, 23, 59, 59, 999));
+      // Find all completed sales for the month
+      const sales = await Sale.find({
+        date: { $gte: start, $lte: end },
+        status: 'completed'
+      });
+      let netProfit = 0;
+      for (const sale of sales) {
+        // Get all sale items for this sale
+        const saleItems = await SaleItem.find({ sale_id: sale._id }).populate('item_id');
+        for (const item of saleItems) {
+          // Profit per item: (unit_price - purchase_price_per_unit) * quantity_sold
+          const purchasePrice = item.item_id && item.item_id.purchase_price_per_unit !== undefined
+            ? item.item_id.purchase_price_per_unit
+            : (item.item_id && item.item_id.purchase_price_per_package && item.item_id.units_per_package
+              ? item.item_id.purchase_price_per_package / item.item_id.units_per_package
+              : 0);
+          const profit = (item.unit_price - purchasePrice) * item.quantity_sold;
+          netProfit += profit;
+        }
+      }
+      months.push({ month: label, netProfit: Math.round(netProfit * 100) / 100 });
+    }
+    // Sort months from most recent to oldest
+    months.sort((a, b) => b.month.localeCompare(a.month));
+    res.json({ months });
+  } catch (err) {
+    console.error('Error fetching monthly profit trend:', err);
+    res.status(500).json({ error: 'Failed to fetch monthly profit trend' });
   }
 });
 
