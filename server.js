@@ -1586,9 +1586,11 @@ app.get('/api/sales/recent', async (req, res) => {
           path: 'item_id',
           select: 'name base_unit purchase_price_per_package weight_per_package units_per_package item_type'
         }
-      });
+      })
+      .populate('payment_method_id')
+      .populate('customer_id'); // <-- populate customer
     // Calculate profit for each sale
-    const salesArr = sales.map(sale => {
+    const salesArr = await Promise.all(sales.map(async sale => {
       let profit = 0;
       const itemsArr = (sale.items || []).map(si => {
         let purchasePricePerUnit = 0;
@@ -1610,14 +1612,23 @@ app.get('/api/sales/recent', async (req, res) => {
           unit: item && item.base_unit ? item.base_unit : ''
         };
       });
+      // Determine customer name
+      let customerName = (sale.customer_info && sale.customer_info.name) ? sale.customer_info.name : '';
+      if (!customerName && sale.customer_id && sale.customer_id.name) {
+        customerName = sale.customer_id.name;
+      }
+      if (!customerName) {
+        customerName = 'Unknown Customer';
+      }
       return {
-        customerName: (sale.customer_info && sale.customer_info.name) ? sale.customer_info.name : 'Unknown Customer',
+        customerName,
         items: itemsArr,
         date: sale.date ? sale.date.toISOString().split('T')[0] : '',
         total: sale.grand_total || 0,
-        profit: Math.round(profit * 100) / 100
+        profit: Math.round(profit * 100) / 100,
+        paymentMethodName: sale.payment_method_id && sale.payment_method_id.name ? sale.payment_method_id.name : 'N/A'
       };
-    });
+    }));
     res.json({ sales: salesArr, total });
   } catch (err) {
     console.error(err);
@@ -2295,6 +2306,17 @@ app.get('/api/financial-report/monthly-profit-trend', async (req, res) => {
   } catch (err) {
     console.error('Error fetching monthly profit trend:', err);
     res.status(500).json({ error: 'Failed to fetch monthly profit trend' });
+  }
+});
+
+// --- API to get available payment statuses for sales ---
+app.get('/api/sales/payment-statuses', (req, res) => {
+  try {
+    // Get enum values from the Sale schema
+    const statuses = require('./models/Sale').schema.path('payment_status').enumValues;
+    res.json({ statuses });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch payment statuses' });
   }
 });
 
