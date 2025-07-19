@@ -328,6 +328,8 @@ app.get('/api/items/stock-table', async (req, res) => {
         lastReceived
       };
     }));
+    // Sort by totalCost descending
+    results.sort((a, b) => b.totalCost - a.totalCost);
     res.json({ items: results });
   } catch (err) {
     console.error('[DEBUG] Error fetching stock table:', err);
@@ -2446,10 +2448,67 @@ app.get('/api/items/stock-table', async (req, res) => {
         lastReceived
       };
     }));
+    // Sort by totalCost descending
+    results.sort((a, b) => b.totalCost - a.totalCost);
     res.json({ items: results });
   } catch (err) {
     console.error('[DEBUG] Error fetching stock table:', err);
     res.status(500).json({ error: 'Failed to fetch stock table' });
+  }
+});
+
+// --- API to get Stock Movement Trend (last 5 months) ---
+app.get('/api/stock/movement-trend', async (req, res) => {
+  try {
+    const InventoryAdjustment = require('./models/InventoryAdjustment');
+    const Sale = require('./models/Sale');
+    const SaleItem = require('./models/SaleItem');
+    const now = new Date();
+    const months = [];
+    // Get last 5 months (current and previous 4)
+    for (let i = 4; i >= 0; i--) {
+      const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+      const label = d.toISOString().slice(0, 7); // YYYY-MM
+      const start = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1, 0, 0, 0, 0));
+      const end = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0, 23, 59, 59, 999));
+      months.push({ label, start, end });
+    }
+    // Stock Inflow: sum of InventoryAdjustment.quantity for 'addition' per month
+    const inflowAgg = await InventoryAdjustment.aggregate([
+      { $match: { adjustment_type: 'addition', adjustment_date: { $gte: months[0].start, $lte: months[months.length-1].end } } },
+      { $group: {
+        _id: { $dateToString: { format: "%Y-%m", date: "$adjustment_date" } },
+        total: { $sum: "$quantity" }
+      } }
+    ]);
+    const inflowMap = {};
+    inflowAgg.forEach(r => { inflowMap[r._id] = r.total; });
+    // Stock Outflow: sum of SaleItem.quantity_sold for sales in each month
+    // First, get all sales in the 5 month range
+    const saleDocs = await Sale.find({ date: { $gte: months[0].start, $lte: months[months.length-1].end }, status: 'completed' }, '_id date');
+    const saleIdToMonth = {};
+    saleDocs.forEach(sale => {
+      const m = sale.date.toISOString().slice(0, 7);
+      saleIdToMonth[sale._id.toString()] = m;
+    });
+    const saleIds = saleDocs.map(s => s._id);
+    let outflowMap = {};
+    if (saleIds.length > 0) {
+      const saleItems = await SaleItem.find({ sale_id: { $in: saleIds } });
+      saleItems.forEach(si => {
+        const m = saleIdToMonth[si.sale_id.toString()];
+        if (!outflowMap[m]) outflowMap[m] = 0;
+        outflowMap[m] += si.quantity_sold;
+      });
+    }
+    // Build arrays for chart
+    const labels = months.map(m => m.label);
+    const inflow = labels.map(l => inflowMap[l] || 0);
+    const outflow = labels.map(l => outflowMap[l] || 0);
+    res.json({ months: labels, inflow, outflow });
+  } catch (err) {
+    console.error('Error fetching stock movement trend:', err);
+    res.status(500).json({ error: 'Failed to fetch stock movement trend' });
   }
 });
 
