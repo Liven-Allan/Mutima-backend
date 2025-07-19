@@ -337,6 +337,50 @@ app.get('/api/items/stock-table', async (req, res) => {
   }
 });
 
+// --- API to get Top 5 Items by ROI ---
+app.get('/api/items/top-roi', async (req, res) => {
+  try {
+    const Item = require('./models/Item');
+    const SaleItem = require('./models/SaleItem');
+    // Get all items
+    const items = await Item.find();
+    // For each item, compute total revenue, total cost, and ROI
+    const roiList = [];
+    for (const item of items) {
+      // Get all sale items for this item
+      const saleItems = await SaleItem.find({ item_id: item._id });
+      if (!saleItems.length) continue;
+      // Total quantity sold
+      const totalQty = saleItems.reduce((sum, si) => sum + (si.quantity_sold || 0), 0);
+      // Total revenue
+      const totalRevenue = saleItems.reduce((sum, si) => sum + ((si.unit_price || 0) * (si.quantity_sold || 0)), 0);
+      // Purchase price per unit
+      let purchasePricePerUnit = 0;
+      if (item.item_type === 'weighable' && item.weight_per_package && item.purchase_price_per_package) {
+        purchasePricePerUnit = item.purchase_price_per_package / item.weight_per_package;
+      } else if (item.item_type === 'unit_based' && item.units_per_package && item.purchase_price_per_package) {
+        purchasePricePerUnit = item.purchase_price_per_package / item.units_per_package;
+      } else if (item.purchase_price_per_package) {
+        purchasePricePerUnit = item.purchase_price_per_package;
+      }
+      // Total cost
+      const totalCost = purchasePricePerUnit * totalQty;
+      // ROI
+      let roi = 0;
+      if (totalCost > 0) {
+        roi = ((totalRevenue - totalCost) / totalCost) * 100;
+      }
+      roiList.push({ name: item.name, roi: Math.round(roi * 100) / 100 });
+    }
+    // Sort by ROI descending and return top 5
+    roiList.sort((a, b) => b.roi - a.roi);
+    res.json({ items: roiList.slice(0, 5) });
+  } catch (err) {
+    console.error('Error fetching top ROI items:', err);
+    res.status(500).json({ error: 'Failed to fetch top ROI items' });
+  }
+});
+
 
 // Get item by ID
 app.get('/api/items/:id', async (req, res) => {
@@ -2509,6 +2553,156 @@ app.get('/api/stock/movement-trend', async (req, res) => {
   } catch (err) {
     console.error('Error fetching stock movement trend:', err);
     res.status(500).json({ error: 'Failed to fetch stock movement trend' });
+  }
+});
+
+// --- API to get Cash Utilization Ratio ---
+app.get('/api/cash-utilization-ratio', async (req, res) => {
+  try {
+    const Item = require('./models/Item');
+    const CashExpenditure = require('./models/CashExpenditure');
+    const CreditTransaction = require('./models/CreditTransaction');
+    const Sale = require('./models/Sale');
+    // Month filter
+    let { month } = req.query;
+    let start, end;
+    if (month) {
+      const [year, m] = month.split('-');
+      start = new Date(Date.UTC(Number(year), Number(m) - 1, 1, 0, 0, 0, 0));
+      end = new Date(Date.UTC(Number(year), Number(m), 0, 23, 59, 59, 999));
+    }
+    // Stock Investment: sum of totalCost for all items (as of now, or could be filtered by last updated in month)
+    let stockInvestment = 0;
+    if (month) {
+      // If filtering by month, only include items updated in that month
+      const items = await Item.find({ updatedAt: { $gte: start, $lte: end } });
+      for (const item of items) {
+        let purchasePricePerUnit = 0;
+        if (item.item_type === 'weighable' && item.weight_per_package && item.purchase_price_per_package) {
+          purchasePricePerUnit = item.purchase_price_per_package / item.weight_per_package;
+        } else if (item.item_type === 'unit_based' && item.units_per_package && item.purchase_price_per_package) {
+          purchasePricePerUnit = item.purchase_price_per_package / item.units_per_package;
+        } else if (item.purchase_price_per_package) {
+          purchasePricePerUnit = item.purchase_price_per_package;
+        }
+        stockInvestment += (item.total_quantity || 0) * purchasePricePerUnit;
+      }
+    } else {
+      const items = await Item.find();
+      for (const item of items) {
+        let purchasePricePerUnit = 0;
+        if (item.item_type === 'weighable' && item.weight_per_package && item.purchase_price_per_package) {
+          purchasePricePerUnit = item.purchase_price_per_package / item.weight_per_package;
+        } else if (item.item_type === 'unit_based' && item.units_per_package && item.purchase_price_per_package) {
+          purchasePricePerUnit = item.purchase_price_per_package / item.units_per_package;
+        } else if (item.purchase_price_per_package) {
+          purchasePricePerUnit = item.purchase_price_per_package;
+        }
+        stockInvestment += (item.total_quantity || 0) * purchasePricePerUnit;
+      }
+    }
+    // Operational Expenses: sum of all CashExpenditure amounts
+    let operationalExpenses = 0;
+    if (month) {
+      const expensesAgg = await CashExpenditure.aggregate([
+        { $match: { expenditure_date: { $gte: start, $lte: end } } },
+        { $group: { _id: null, total: { $sum: "$amount" } } }
+      ]);
+      operationalExpenses = expensesAgg.length > 0 ? expensesAgg[0].total : 0;
+    } else {
+      const expensesAgg = await CashExpenditure.aggregate([
+        { $group: { _id: null, total: { $sum: "$amount" } } }
+      ]);
+      operationalExpenses = expensesAgg.length > 0 ? expensesAgg[0].total : 0;
+    }
+    // Pending Payments: sum of outstanding (unpaid) amounts in CreditTransaction (created in month)
+    let pendingPayments = 0;
+    if (month) {
+      const pendingAgg = await CreditTransaction.aggregate([
+        { $match: { payment_status: { $ne: 'paid' }, transaction_date: { $gte: start, $lte: end } } },
+        { $project: { outstanding: { $subtract: ["$total_amount", { $ifNull: ["$amount_paid", 0] }] } } },
+        { $group: { _id: null, total: { $sum: "$outstanding" } } }
+      ]);
+      pendingPayments = pendingAgg.length > 0 ? pendingAgg[0].total : 0;
+    } else {
+      const pendingAgg = await CreditTransaction.aggregate([
+        { $match: { payment_status: { $ne: 'paid' } } },
+        { $project: { outstanding: { $subtract: ["$total_amount", { $ifNull: ["$amount_paid", 0] }] } } },
+        { $group: { _id: null, total: { $sum: "$outstanding" } } }
+      ]);
+      pendingPayments = pendingAgg.length > 0 ? pendingAgg[0].total : 0;
+    }
+    // Sales: sum of all completed sales (grand_total)
+    let sales = 0;
+    if (month) {
+      const salesAgg = await Sale.aggregate([
+        { $match: { status: 'completed', date: { $gte: start, $lte: end } } },
+        { $group: { _id: null, total: { $sum: "$grand_total" } } }
+      ]);
+      sales = salesAgg.length > 0 ? salesAgg[0].total : 0;
+    } else {
+      const salesAgg = await Sale.aggregate([
+        { $match: { status: 'completed' } },
+        { $group: { _id: null, total: { $sum: "$grand_total" } } }
+      ]);
+      sales = salesAgg.length > 0 ? salesAgg[0].total : 0;
+    }
+    // Compute percentages
+    const total = stockInvestment + operationalExpenses + pendingPayments + sales;
+    const percentages = total > 0 ? {
+      stockInvestment: Math.round((stockInvestment / total) * 100),
+      operationalExpenses: Math.round((operationalExpenses / total) * 100),
+      pendingPayments: Math.round((pendingPayments / total) * 100),
+      sales: Math.round((sales / total) * 100)
+    } : { stockInvestment: 0, operationalExpenses: 0, pendingPayments: 0, sales: 0 };
+    res.json({ stockInvestment, operationalExpenses, pendingPayments, sales, total, percentages });
+  } catch (err) {
+    console.error('Error fetching cash utilization ratio:', err);
+    res.status(500).json({ error: 'Failed to fetch cash utilization ratio' });
+  }
+});
+
+// --- API to get Top 5 Items by ROI ---
+app.get('/api/items/top-roi', async (req, res) => {
+  try {
+    const Item = require('./models/Item');
+    const SaleItem = require('./models/SaleItem');
+    // Get all items
+    const items = await Item.find();
+    // For each item, compute total revenue, total cost, and ROI
+    const roiList = [];
+    for (const item of items) {
+      // Get all sale items for this item
+      const saleItems = await SaleItem.find({ item_id: item._id });
+      if (!saleItems.length) continue;
+      // Total quantity sold
+      const totalQty = saleItems.reduce((sum, si) => sum + (si.quantity_sold || 0), 0);
+      // Total revenue
+      const totalRevenue = saleItems.reduce((sum, si) => sum + ((si.unit_price || 0) * (si.quantity_sold || 0)), 0);
+      // Purchase price per unit
+      let purchasePricePerUnit = 0;
+      if (item.item_type === 'weighable' && item.weight_per_package && item.purchase_price_per_package) {
+        purchasePricePerUnit = item.purchase_price_per_package / item.weight_per_package;
+      } else if (item.item_type === 'unit_based' && item.units_per_package && item.purchase_price_per_package) {
+        purchasePricePerUnit = item.purchase_price_per_package / item.units_per_package;
+      } else if (item.purchase_price_per_package) {
+        purchasePricePerUnit = item.purchase_price_per_package;
+      }
+      // Total cost
+      const totalCost = purchasePricePerUnit * totalQty;
+      // ROI
+      let roi = 0;
+      if (totalCost > 0) {
+        roi = ((totalRevenue - totalCost) / totalCost) * 100;
+      }
+      roiList.push({ name: item.name, roi: Math.round(roi * 100) / 100 });
+    }
+    // Sort by ROI descending and return top 5
+    roiList.sort((a, b) => b.roi - a.roi);
+    res.json({ items: roiList.slice(0, 5) });
+  } catch (err) {
+    console.error('Error fetching top ROI items:', err);
+    res.status(500).json({ error: 'Failed to fetch top ROI items' });
   }
 });
 
