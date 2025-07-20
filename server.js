@@ -325,7 +325,8 @@ app.get('/api/items/stock-table', async (req, res) => {
         currentStock: item.total_quantity,
         unitPrice: item.selling_price_per_unit,
         totalCost: item.total_quantity * purchasePricePerUnit,
-        lastReceived
+        lastReceived,
+        minimum_stock: item.minimum_stock
       };
     }));
     // Sort by totalCost descending
@@ -381,6 +382,30 @@ app.get('/api/items/top-roi', async (req, res) => {
   }
 });
 
+// --- API to get Expiring Products within X months ---
+app.get('/api/items/expiring', async (req, res) => {
+  try {
+    const Item = require('./models/Item');
+    let months = parseInt(req.query.months, 10);
+    if (isNaN(months) || months < 1) months = 2;
+    const now = new Date();
+    const future = new Date(now);
+    future.setMonth(future.getMonth() + months);
+    // Find items with expiry_date between now and future
+    const items = await Item.find({
+      expiry_date: { $gte: now, $lte: future }
+    });
+    const result = items.map(item => ({
+      expiry_date: item.expiry_date,
+      name: item.name,
+      total_quantity: item.total_quantity,
+      total: (item.total_quantity || 0) * (item.selling_price_per_unit || 0)
+    }));
+    res.json({ items: result });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch expiring products' });
+  }
+});
 
 // Get item by ID
 app.get('/api/items/:id', async (req, res) => {
@@ -2489,7 +2514,8 @@ app.get('/api/items/stock-table', async (req, res) => {
         currentStock: item.total_quantity,
         unitPrice: item.selling_price_per_unit,
         totalCost: item.total_quantity * purchasePricePerUnit,
-        lastReceived
+        lastReceived,
+        minimum_stock: item.minimum_stock
       };
     }));
     // Sort by totalCost descending
@@ -2703,6 +2729,182 @@ app.get('/api/items/top-roi', async (req, res) => {
   } catch (err) {
     console.error('Error fetching top ROI items:', err);
     res.status(500).json({ error: 'Failed to fetch top ROI items' });
+  }
+});
+
+// --- API to get Inventory Cost for a Month (with percent change) ---
+app.get('/api/inventory/monthly-cost', async (req, res) => {
+  try {
+    const InventoryAdjustment = require('./models/InventoryAdjustment');
+    const Item = require('./models/Item');
+    let { month } = req.query;
+    let start, end;
+    if (month) {
+      const [year, m] = month.split('-');
+      start = new Date(Date.UTC(Number(year), Number(m) - 1, 1, 0, 0, 0, 0));
+      end = new Date(Date.UTC(Number(year), Number(m), 0, 23, 59, 59, 999));
+    } else {
+      const now = new Date();
+      start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
+      end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0, 23, 59, 59, 999));
+      month = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+    }
+    // Helper to compute total cost for a month
+    async function getMonthCost(start, end) {
+      const adjustments = await InventoryAdjustment.find({
+        adjustment_type: 'addition',
+        adjustment_date: { $gte: start, $lte: end }
+      });
+      const Item = require('./models/Item');
+      let totalCost = 0;
+      for (const adj of adjustments) {
+        const item = await Item.findById(adj.item_id);
+        if (!item) continue;
+        let purchasePricePerUnit = 0;
+        if (item.item_type === 'weighable' && item.weight_per_package && item.purchase_price_per_package) {
+          purchasePricePerUnit = item.purchase_price_per_package / item.weight_per_package;
+        } else if (item.item_type === 'unit_based' && item.units_per_package && item.purchase_price_per_package) {
+          purchasePricePerUnit = item.purchase_price_per_package / item.units_per_package;
+        } else if (item.purchase_price_per_package) {
+          purchasePricePerUnit = item.purchase_price_per_package;
+        }
+        totalCost += (adj.quantity || 0) * purchasePricePerUnit;
+      }
+      const newItems = await Item.find({ createdAt: { $gte: start, $lte: end } });
+      for (const item of newItems) {
+        let purchasePricePerUnit = 0;
+        if (item.item_type === 'weighable' && item.weight_per_package && item.purchase_price_per_package) {
+          purchasePricePerUnit = item.purchase_price_per_package / item.weight_per_package;
+        } else if (item.item_type === 'unit_based' && item.units_per_package && item.purchase_price_per_package) {
+          purchasePricePerUnit = item.purchase_price_per_package / item.units_per_package;
+        } else if (item.purchase_price_per_package) {
+          purchasePricePerUnit = item.purchase_price_per_package;
+        }
+        totalCost += (item.total_quantity || 0) * purchasePricePerUnit;
+      }
+      return Math.round(totalCost * 100) / 100;
+    }
+    // Get current month cost
+    const currCost = await getMonthCost(start, end);
+    // Get previous month range
+    let prevYear, prevMonthNum;
+    if (month) {
+      const [year, m] = month.split('-').map(Number);
+      prevYear = year;
+      prevMonthNum = m - 1;
+      if (prevMonthNum === 0) { prevMonthNum = 12; prevYear--; }
+    } else {
+      const now = new Date();
+      prevYear = now.getUTCFullYear();
+      prevMonthNum = now.getUTCMonth();
+      if (prevMonthNum === 0) { prevMonthNum = 12; prevYear--; }
+    }
+    const prevStart = new Date(Date.UTC(prevYear, prevMonthNum - 1, 1, 0, 0, 0, 0));
+    const prevEnd = new Date(Date.UTC(prevYear, prevMonthNum, 0, 23, 59, 59, 999));
+    const prevCost = await getMonthCost(prevStart, prevEnd);
+    // Calculate percent change
+    let percentChange = 0;
+    if (prevCost > 0) {
+      percentChange = ((currCost - prevCost) / prevCost) * 100;
+    } else if (currCost > 0) {
+      percentChange = 100;
+    }
+    percentChange = Math.round(percentChange * 10) / 10;
+    res.json({ totalCost: currCost, percentChange });
+  } catch (err) {
+    console.error('Error fetching monthly inventory cost:', err);
+    res.status(500).json({ error: 'Failed to fetch monthly inventory cost' });
+  }
+});
+
+// --- API to get Inventory Cost Details for a Month ---
+app.get('/api/inventory/monthly-cost-details', async (req, res) => {
+  try {
+    const InventoryAdjustment = require('./models/InventoryAdjustment');
+    const Item = require('./models/Item');
+    let { month } = req.query;
+    let start, end;
+    if (month) {
+      const [year, m] = month.split('-');
+      start = new Date(Date.UTC(Number(year), Number(m) - 1, 1, 0, 0, 0, 0));
+      end = new Date(Date.UTC(Number(year), Number(m), 0, 23, 59, 59, 999));
+    } else {
+      const now = new Date();
+      start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
+      end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0, 23, 59, 59, 999));
+    }
+    // 1. Inventory Adjustments (additions) in the month
+    const adjustments = await InventoryAdjustment.find({
+      adjustment_type: 'addition',
+      adjustment_date: { $gte: start, $lte: end }
+    });
+    const ItemMap = {};
+    for (const adj of adjustments) {
+      const item = await Item.findById(adj.item_id);
+      if (!item) continue;
+      let purchasePricePerUnit = 0;
+      if (item.item_type === 'weighable' && item.weight_per_package && item.purchase_price_per_package) {
+        purchasePricePerUnit = item.purchase_price_per_package / item.weight_per_package;
+      } else if (item.item_type === 'unit_based' && item.units_per_package && item.purchase_price_per_package) {
+        purchasePricePerUnit = item.purchase_price_per_package / item.units_per_package;
+      } else if (item.purchase_price_per_package) {
+        purchasePricePerUnit = item.purchase_price_per_package;
+      }
+      const cost = (adj.quantity || 0) * purchasePricePerUnit;
+      if (!ItemMap[item._id]) {
+        ItemMap[item._id] = { itemName: item.name, quantity: 0, cost: 0 };
+      }
+      ItemMap[item._id].quantity += (adj.quantity || 0);
+      ItemMap[item._id].cost += cost;
+    }
+    // 2. New items created in the month (createdAt in month)
+    const newItems = await Item.find({ createdAt: { $gte: start, $lte: end } });
+    for (const item of newItems) {
+      let purchasePricePerUnit = 0;
+      if (item.item_type === 'weighable' && item.weight_per_package && item.purchase_price_per_package) {
+        purchasePricePerUnit = item.purchase_price_per_package / item.weight_per_package;
+      } else if (item.item_type === 'unit_based' && item.units_per_package && item.purchase_price_per_package) {
+        purchasePricePerUnit = item.purchase_price_per_package / item.units_per_package;
+      } else if (item.purchase_price_per_package) {
+        purchasePricePerUnit = item.purchase_price_per_package;
+      }
+      const cost = (item.total_quantity || 0) * purchasePricePerUnit;
+      if (!ItemMap[item._id]) {
+        ItemMap[item._id] = { itemName: item.name, quantity: 0, cost: 0 };
+      }
+      ItemMap[item._id].quantity += (item.total_quantity || 0);
+      ItemMap[item._id].cost += cost;
+    }
+    const details = Object.values(ItemMap).map(row => ({ ...row, cost: Math.round(row.cost * 100) / 100 }));
+    res.json({ details });
+  } catch (err) {
+    console.error('Error fetching monthly inventory cost details:', err);
+    res.status(500).json({ error: 'Failed to fetch monthly inventory cost details' });
+  }
+});
+
+// --- API to get Expiring Products within X months ---
+app.get('/api/items/expiring', async (req, res) => {
+  try {
+    const Item = require('./models/Item');
+    let months = parseInt(req.query.months, 10);
+    if (isNaN(months) || months < 1) months = 2;
+    const now = new Date();
+    const future = new Date(now);
+    future.setMonth(future.getMonth() + months);
+    // Find items with expiry_date between now and future
+    const items = await Item.find({
+      expiry_date: { $gte: now, $lte: future }
+    });
+    const result = items.map(item => ({
+      expiry_date: item.expiry_date,
+      name: item.name,
+      total_quantity: item.total_quantity,
+      total: (item.total_quantity || 0) * (item.selling_price_per_unit || 0)
+    }));
+    res.json({ items: result });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch expiring products' });
   }
 });
 
