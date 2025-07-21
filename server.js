@@ -2908,6 +2908,122 @@ app.get('/api/items/expiring', async (req, res) => {
   }
 });
 
+// --- API to get total number of users ---
+app.get('/api/users/count', async (req, res) => {
+  try {
+    const User = require('./models/User');
+    const count = await User.countDocuments();
+    res.json({ count });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch user count' });
+  }
+});
+
+// --- API to get count of users with status 'pending' ---
+app.get('/api/users/pending-count', async (req, res) => {
+  try {
+    const User = require('./models/User');
+    const count = await User.countDocuments({ status: 'pending' });
+    res.json({ count });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch pending user count' });
+  }
+});
+
+// --- API to get count of users with status 'rejected' ---
+app.get('/api/users/rejected-count', async (req, res) => {
+  try {
+    const User = require('./models/User');
+    const count = await User.countDocuments({ status: 'rejected' });
+    res.json({ count });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch rejected user count' });
+  }
+});
+
+// --- API to get all active users ---
+app.get('/api/users/active', async (req, res) => {
+  try {
+    const User = require('./models/User');
+    const users = await User.find({ status: 'active' }, 'first_name last_name username email phone role status last_login _id');
+    res.json({ users });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch active users' });
+  }
+});
+
+// --- API to get all pending users ---
+app.get('/api/users/pending', async (req, res) => {
+  try {
+    const User = require('./models/User');
+    const users = await User.find({ status: 'pending' }, 'first_name last_name username email phone role status createdAt _id');
+    res.json({ users });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch pending users' });
+  }
+});
+
+// --- API to update user status by id ---
+app.patch('/api/users/:id/status', async (req, res) => {
+  try {
+    const User = require('./models/User');
+    const { status } = req.body;
+    if (!['active', 'pending', 'rejected'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid status value' });
+    }
+    const user = await User.findByIdAndUpdate(req.params.id, { status }, { new: true });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    res.json({ user });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update user status' });
+  }
+});
+
+// Update POST /api/users to accept all fields for new user creation
+app.post('/api/users', async (req, res) => {
+  try {
+    const User = require('./models/User');
+    const { first_name, last_name, username, phone, email, password, role, status } = req.body;
+    const user = new User({
+      first_name,
+      last_name,
+      username,
+      phone,
+      email,
+      password,
+      role,
+      status
+    });
+    await user.save();
+    res.status(201).json({ message: 'User added successfully', user });
+  } catch (err) {
+    res.status(400).json({ error: 'Failed to add user', details: err });
+  }
+});
+
+// --- API to delete a user by id ---
+app.delete('/api/users/:id', async (req, res) => {
+  try {
+    const User = require('./models/User');
+    const user = await User.findByIdAndDelete(req.params.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    res.json({ message: 'User deleted successfully' });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to delete user' });
+  }
+});
+
+// --- API to get all rejected users ---
+app.get('/api/users/rejected', async (req, res) => {
+  try {
+    const User = require('./models/User');
+    const users = await User.find({ status: 'rejected' }, 'first_name last_name username email phone role status createdAt _id');
+    res.json({ users });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch rejected users' });
+  }
+});
+
 // Start the server
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {

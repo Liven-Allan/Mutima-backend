@@ -32,6 +32,11 @@ const UserSchema = new mongoose.Schema({
     enum: ['SalesManager', 'SalesPerson'],
     default: 'SalesPerson'
   },
+  status: {
+    type: String,
+    enum: ['active', 'pending', 'rejected'],
+    default: 'pending'
+  },
   is_active: {
     type: Boolean,
     default: true
