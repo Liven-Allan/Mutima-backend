@@ -3024,6 +3024,73 @@ app.get('/api/users/rejected', async (req, res) => {
   }
 });
 
+// --- API to delete a sale by id and restore item quantities ---
+app.delete('/api/sales/:id', async (req, res) => {
+  try {
+    const saleId = req.params.id;
+    // Find all sale items for this sale
+    const saleItems = await SaleItem.find({ sale_id: saleId });
+    console.log('Deleting sale:', saleId, 'Sale items:', saleItems);
+    // Restore item quantities
+    await Promise.all(saleItems.map(async (si) => {
+      const updateResult = await Item.findByIdAndUpdate(si.item_id, { $inc: { total_quantity: si.quantity_sold || si.quantity } });
+      console.log('Restored item:', si.item_id, 'qty:', si.quantity_sold, 'Update result:', updateResult);
+    }));
+    // Delete sale items
+    await SaleItem.deleteMany({ sale_id: saleId });
+    // Delete the sale
+    const deletedSale = await Sale.findByIdAndDelete(saleId);
+    if (!deletedSale) return res.status(404).json({ error: 'Sale not found' });
+    res.json({ message: 'Sale deleted and item quantities restored.' });
+  } catch (error) {
+    console.error('Error deleting sale:', error);
+    res.status(500).json({ error: 'Failed to delete sale', details: error.message });
+  }
+});
+
+// --- API to get all inventory adjustments with item details ---
+app.get('/api/inventory-adjustments', async (req, res) => {
+  try {
+    const InventoryAdjustment = require('./models/InventoryAdjustment');
+    const adjustments = await InventoryAdjustment.find()
+      .populate('item_id')
+      .sort({ adjustment_date: -1 });
+    res.json({ adjustments });
+  } catch (err) {
+    console.error('Error fetching inventory adjustments:', err);
+    res.status(500).json({ error: 'Failed to fetch inventory adjustments' });
+  }
+});
+
+// --- API to delete an inventory adjustment and update item quantity ---
+app.delete('/api/inventory-adjustments/:id', async (req, res) => {
+  try {
+    const InventoryAdjustment = require('./models/InventoryAdjustment');
+    const Item = require('./models/Item');
+    const adj = await InventoryAdjustment.findById(req.params.id);
+    if (!adj) return res.status(404).json({ error: 'Adjustment not found' });
+    const item = await Item.findById(adj.item_id);
+    if (!item) return res.status(404).json({ error: 'Item not found' });
+    // Only handle 'addition' and 'deduction' for now
+    let update = 0;
+    if (adj.adjustment_type === 'addition') {
+      update = -Math.abs(adj.quantity);
+    } else if (adj.adjustment_type === 'deduction') {
+      update = Math.abs(adj.quantity);
+    }
+    // Update the item's total_quantity
+    if (update !== 0) {
+      item.total_quantity = Math.max(0, (item.total_quantity || 0) + update);
+      await item.save();
+    }
+    await adj.deleteOne();
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error deleting inventory adjustment:', err);
+    res.status(500).json({ error: 'Failed to delete inventory adjustment' });
+  }
+});
+
 // Start the server
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
