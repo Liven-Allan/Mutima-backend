@@ -187,32 +187,27 @@ app.post('/api/auth/signup', async (req, res) => {
 
 // Login route
 app.post('/api/auth/login', async (req, res) => {
-  const { email, password } = req.body;
   try {
+    const User = require('./models/User');
+    const { email, password } = req.body;
     const user = await User.findOne({ email });
-
     if (!user) {
-      console.log('No user found with email:', email);
-      return res.status(401).json({ message: 'Invalid credentials' });
+      return res.status(401).json({ message: 'Invalid email or password' });
     }
-
-    console.log('User found:', user);
-
     const isMatch = await user.comparePassword(password);
-
-    console.log('Password match result:', isMatch);
-
     if (!isMatch) {
-      return res.status(401).json({ message: 'Invalid credentials' });
+      return res.status(401).json({ message: 'Invalid email or password' });
     }
-
+    if (user.status !== 'active') {
+      return res.status(403).json({ message: 'Your account is not active yet. Please contact the administrator.' });
+    }
+    // Optionally, update last_login
     user.last_login = new Date();
     await user.save();
-
-    res.status(200).json({ message: 'Login successful', user });
+    res.json({ message: 'Login successful', user });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error during login' });
+    console.error('Login error:', err);
+    res.status(500).json({ message: 'Server error during login' });
   }
 });
 
