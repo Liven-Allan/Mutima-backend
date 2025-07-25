@@ -189,6 +189,8 @@ app.post('/api/auth/signup', async (req, res) => {
 app.post('/api/auth/login', async (req, res) => {
   try {
     const User = require('./models/User');
+    const jwt = require('jsonwebtoken');
+    const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret';
     const { email, password } = req.body;
     const user = await User.findOne({ email });
     if (!user) {
@@ -204,7 +206,14 @@ app.post('/api/auth/login', async (req, res) => {
     // Optionally, update last_login
     user.last_login = new Date();
     await user.save();
-    res.json({ message: 'Login successful', user });
+    // Generate JWT
+    const token = jwt.sign(
+      { id: user._id, email: user.email, role: user.role },
+      JWT_SECRET,
+      { expiresIn: '2h' }
+    );
+    console.log('[DEBUG] Generated JWT token:', token); // Debug statement
+    res.json({ message: 'Login successful', user, token });
   } catch (err) {
     console.error('Login error:', err);
     res.status(500).json({ message: 'Server error during login' });
