@@ -16,6 +16,7 @@ const CommodityRequest = require('./models/CommodityRequest');
 const CashExpenditure = require('./models/CashExpenditure');
 const InventoryAdjustment = require('./models/InventoryAdjustment');
 const InventoryStock = require('./models/InventoryStock');
+const ItemLoss = require('./models/ItemLoss');
 
 dotenv.config();
 
@@ -3092,6 +3093,203 @@ app.delete('/api/inventory-adjustments/:id', async (req, res) => {
   } catch (err) {
     console.error('Error deleting inventory adjustment:', err);
     res.status(500).json({ error: 'Failed to delete inventory adjustment' });
+  }
+});
+
+// --- API to get all lost items ---
+app.get('/api/item-losses', async (req, res) => {
+  try {
+    const ItemLoss = require('./models/ItemLoss');
+    const Item = require('./models/Item');
+    
+    // Get all lost items with populated item information
+    const losses = await ItemLoss.find()
+      .populate('item_id', 'name category_id')
+      .populate('reported_by', 'first_name last_name')
+      .sort({ loss_date: -1, createdAt: -1 });
+    
+    // Format the response to include item name
+    const formattedLosses = losses.map(loss => ({
+      _id: loss._id,
+      item_id: loss.item_id._id,
+      item_name: loss.item_id.name,
+      loss_date: loss.loss_date,
+      quantity_lost: loss.quantity_lost,
+      unit_of_measure: loss.unit_of_measure,
+      loss_reason: loss.loss_reason,
+      loss_description: loss.loss_description,
+      estimated_cost: loss.estimated_cost,
+      reported_by: loss.reported_by ? `${loss.reported_by.first_name} ${loss.reported_by.last_name}` : 'System',
+      location: loss.location,
+      batch_number: loss.batch_number,
+      supplier_batch: loss.supplier_batch,
+      is_insured: loss.is_insured,
+      insurance_claim_number: loss.insurance_claim_number,
+      status: loss.status,
+      investigation_notes: loss.investigation_notes,
+      preventive_measures: loss.preventive_measures,
+      photos: loss.photos,
+      witnesses: loss.witnesses,
+      total_loss_value: loss.total_loss_value,
+      formatted_loss_date: loss.formatted_loss_date,
+      createdAt: loss.createdAt,
+      updatedAt: loss.updatedAt
+    }));
+    
+    res.json({ losses: formattedLosses });
+  } catch (err) {
+    console.error('Error fetching lost items:', err);
+    res.status(500).json({ error: 'Failed to fetch lost items' });
+  }
+});
+
+// --- API to create a new lost item record ---
+app.post('/api/item-losses', async (req, res) => {
+  try {
+    const {
+      item_id,
+      quantity_lost,
+      loss_reason,
+      loss_description,
+      estimated_cost,
+      reported_by,
+      location,
+      batch_number,
+      unit_of_measure
+    } = req.body;
+
+    // Validation
+    if (!item_id || !quantity_lost || !loss_reason || !loss_description || !estimated_cost) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    // Try to get user ID from JWT token if available
+    let userId = null;
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      try {
+        const token = authHeader.substring(7);
+        const jwt = require('jsonwebtoken');
+        const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret';
+        const decoded = jwt.verify(token, JWT_SECRET);
+        userId = decoded.id;
+      } catch (jwtError) {
+        console.log('JWT token invalid or missing, proceeding without user ID');
+      }
+    }
+
+    // If no user ID from token, try to use provided reported_by or make it optional
+    if (!userId) {
+      if (reported_by && reported_by !== 'current-user-id') {
+        userId = reported_by;
+      }
+    }
+
+    const newLoss = new ItemLoss({
+      item_id,
+      quantity_lost,
+      loss_reason,
+      loss_description,
+      estimated_cost,
+      reported_by: userId, // Use the extracted user ID or null
+      location,
+      batch_number,
+      unit_of_measure
+    });
+
+    await newLoss.save();
+    
+    // Update item stock
+    await newLoss.updateItemStock();
+    
+    res.status(201).json({ message: 'Lost item record created successfully', loss: newLoss });
+  } catch (err) {
+    console.error('Error creating lost item record:', err);
+    res.status(500).json({ error: 'Failed to create lost item record', details: err.message });
+  }
+});
+
+// --- API to delete a lost item record and restore stock ---
+app.delete('/api/item-losses/:id', async (req, res) => {
+  try {
+    const ItemLoss = require('./models/ItemLoss');
+    const Item = require('./models/Item');
+    
+    const lossId = req.params.id;
+    
+    // Find the loss record
+    const lossRecord = await ItemLoss.findById(lossId);
+    if (!lossRecord) {
+      return res.status(404).json({ error: 'Loss record not found' });
+    }
+    
+    // Get the item to restore stock
+    const item = await Item.findById(lossRecord.item_id);
+    if (!item) {
+      return res.status(404).json({ error: 'Associated item not found' });
+    }
+    
+    // Store the loss details for logging
+    const lossDetails = {
+      itemName: item.name,
+      quantityLost: lossRecord.quantity_lost,
+      unitOfMeasure: lossRecord.unit_of_measure,
+      oldStock: item.total_quantity
+    };
+    
+    // Restore the quantity to the item
+    let quantityToRestore = lossRecord.quantity_lost;
+    
+    // Handle unit conversions if needed (reverse of the loss conversion)
+    if (lossRecord.unit_of_measure !== item.base_unit) {
+      // Basic conversion logic - reverse of what we did in updateItemStock
+      if (lossRecord.unit_of_measure === 'kg' && item.base_unit === 'g') {
+        quantityToRestore = lossRecord.quantity_lost * 1000;
+      } else if (lossRecord.unit_of_measure === 'g' && item.base_unit === 'kg') {
+        quantityToRestore = lossRecord.quantity_lost / 1000;
+      } else if (lossRecord.unit_of_measure === 'l' && item.base_unit === 'ml') {
+        quantityToRestore = lossRecord.quantity_lost * 1000;
+      } else if (lossRecord.unit_of_measure === 'ml' && item.base_unit === 'l') {
+        quantityToRestore = lossRecord.quantity_lost / 1000;
+      } else if (lossRecord.unit_of_measure === 'box' && item.base_unit === 'pcs') {
+        // Assume 1 box = units_per_package pieces for unit-based items
+        if (item.item_type === 'unit_based' && item.units_per_package) {
+          quantityToRestore = lossRecord.quantity_lost * item.units_per_package;
+        }
+      } else if (lossRecord.unit_of_measure === 'packet' && item.base_unit === 'pcs') {
+        // Assume 1 packet = units_per_package pieces for unit-based items
+        if (item.item_type === 'unit_based' && item.units_per_package) {
+          quantityToRestore = lossRecord.quantity_lost * item.units_per_package;
+        }
+      } else if (lossRecord.unit_of_measure === 'sack' && item.base_unit === 'kg') {
+        // Assume 1 sack = weight_per_package kg for weighable items
+        if (item.item_type === 'weighable' && item.weight_per_package) {
+          quantityToRestore = lossRecord.quantity_lost * item.weight_per_package;
+        }
+      } else {
+        // For other conversions, assume 1:1 ratio
+        console.log(`Warning: Converting ${lossRecord.unit_of_measure} to ${item.base_unit} using 1:1 ratio for restoration`);
+      }
+    }
+    
+    // Restore the quantity to the item
+    item.total_quantity += quantityToRestore;
+    await item.save();
+    
+    // Delete the loss record
+    await ItemLoss.findByIdAndDelete(lossId);
+    
+    console.log(`Stock restored for item ${item.name}: ${lossDetails.oldStock} → ${item.total_quantity} ${item.base_unit}`);
+    
+    res.json({ 
+      message: 'Loss record deleted successfully', 
+      restoredQuantity: quantityToRestore,
+      newStock: item.total_quantity,
+      itemName: item.name
+    });
+  } catch (err) {
+    console.error('Error deleting lost item record:', err);
+    res.status(500).json({ error: 'Failed to delete lost item record', details: err.message });
   }
 });
 
