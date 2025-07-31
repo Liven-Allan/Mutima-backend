@@ -2064,38 +2064,37 @@ app.get('/api/credit/monthly-totals', async (req, res) => {
 });
 
 // --- API to get Stock Inventory Value ---
+// FIXED: Now uses Item.total_quantity instead of InventoryStock records
+// This ensures the stock value reflects actual current stock after sales and deductions
 app.get('/api/stock-inventory-value', async (req, res) => {
   try {
-    // Get all InventoryStock records, populate item_id
-    const stocks = await InventoryStock.find().populate('item_id');
+    // Get all items with their current total_quantity (which is properly updated with sales/deductions)
+    const items = await Item.find();
     let totalStockValue = 0;
-    let latestDate = null;
+    let latestDate = new Date(); // Use current date as latest
 
-    for (const stock of stocks) {
-      const item = stock.item_id;
-      if (!item) continue;
+    for (const item of items) {
+      if (!item.total_quantity || item.total_quantity <= 0) continue;
+      
       let itemValue = 0;
       if (item.item_type === 'weighable') {
-        const totalKg = (stock.full_packages * item.weight_per_package) + stock.partial_quantity;
+        // For weighable items, total_quantity is in kg
         const pricePerKg = item.purchase_price_per_package / item.weight_per_package;
-        itemValue = totalKg * pricePerKg;
+        itemValue = item.total_quantity * pricePerKg;
       } else if (item.item_type === 'unit_based') {
-        const totalUnits = (stock.full_packages * item.units_per_package) + stock.partial_quantity;
+        // For unit-based items, total_quantity is in units
         const pricePerUnit = item.purchase_price_per_package / item.units_per_package;
-        itemValue = totalUnits * pricePerUnit;
+        itemValue = item.total_quantity * pricePerUnit;
       } else {
-        itemValue = stock.full_packages * item.purchase_price_per_package;
+        // Fallback for other item types
+        itemValue = item.total_quantity * item.purchase_price_per_package;
       }
       totalStockValue += itemValue;
-      // Track latest date
-      const stockDate = stock.last_updated || stock.updatedAt || stock.createdAt;
-      if (!latestDate || (stockDate && stockDate > latestDate)) {
-        latestDate = stockDate;
-      }
     }
+    
     res.json({
       totalStockValue,
-      latestDate: latestDate ? latestDate.toISOString().slice(0, 10) : null
+      latestDate: latestDate.toISOString().slice(0, 10)
     });
   } catch (err) {
     console.error('Error calculating stock inventory value:', err);
@@ -2104,6 +2103,8 @@ app.get('/api/stock-inventory-value', async (req, res) => {
 });
 
 // --- API to get Inventory Details for a specific date ---
+// FIXED: Now uses Item.total_quantity instead of InventoryStock records
+// This ensures the inventory details reflect actual current stock after sales and deductions
 app.get('/api/inventory-details', async (req, res) => {
   try {
     const dateParam = req.query.date;
@@ -2113,37 +2114,35 @@ app.get('/api/inventory-details', async (req, res) => {
       targetDate.setHours(23, 59, 59, 999);
     }
 
-    // Get all items
+    // Get all items with their current total_quantity (which reflects the actual current stock)
     const items = await Item.find();
     const results = [];
 
     for (const item of items) {
-      // Find the latest InventoryStock for this item as of the target date
-      let stockQuery = { item_id: item._id };
-      if (targetDate) {
-        stockQuery['last_updated'] = { $lte: targetDate };
-      }
-      // Find the latest stock record as of the date
-      const stock = await InventoryStock.findOne(stockQuery).sort({ last_updated: -1, updatedAt: -1 });
-      if (!stock) continue;
+      // Use current total_quantity which is properly updated with sales/deductions
+      if (!item.total_quantity || item.total_quantity <= 0) continue;
+      
       let amount = 0;
-      let quantity = 0;
+      let quantity = item.total_quantity;
+      
       if (item.item_type === 'weighable') {
-        quantity = (stock.full_packages * item.weight_per_package) + stock.partial_quantity;
+        // For weighable items, total_quantity is in kg
         const pricePerKg = item.purchase_price_per_package / item.weight_per_package;
         amount = quantity * pricePerKg;
       } else if (item.item_type === 'unit_based') {
-        quantity = (stock.full_packages * item.units_per_package) + stock.partial_quantity;
+        // For unit-based items, total_quantity is in units
         const pricePerUnit = item.purchase_price_per_package / item.units_per_package;
         amount = quantity * pricePerUnit;
       } else {
-        quantity = stock.full_packages;
+        // Fallback for other item types
         amount = quantity * item.purchase_price_per_package;
       }
+      
       if (amount > 0) {
         results.push({ name: item.name, quantity, amount });
       }
     }
+    
     res.json({ details: results });
   } catch (err) {
     console.error('Error fetching inventory details:', err);
