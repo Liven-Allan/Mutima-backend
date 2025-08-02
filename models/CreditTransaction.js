@@ -115,9 +115,11 @@ CreditTransactionSchema.pre('save', async function(next) {
 CreditTransactionSchema.post('save', async function(doc) {
   const Customer = mongoose.model('Customer');
   
-  if (doc.payment_status !== 'paid') {
+  // Only update customer balance for NEW credit transactions
+  // This prevents incorrect updates when payments are recorded
+  if (this.isNew && doc.payment_status !== 'paid') {
     await Customer.findByIdAndUpdate(doc.customer_id, {
-      $inc: { total_credit_balance: doc.outstanding_balance }
+      $inc: { total_credit_balance: doc.total_amount }
     });
   }
 });

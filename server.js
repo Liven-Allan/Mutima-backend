@@ -459,6 +459,30 @@ app.post('/api/customers', async (req, res) => {
   }
 });
 
+// Delete a customer by ID
+app.delete('/api/customers/:id', async (req, res) => {
+  try {
+    const customer = await Customer.findById(req.params.id);
+    if (!customer) {
+      return res.status(404).json({ error: 'Customer not found' });
+    }
+    
+    // Check if customer has outstanding credit balance
+    if (customer.total_credit_balance && customer.total_credit_balance !== 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete customer with outstanding credit balance',
+        details: `Customer has outstanding credit balance of shs:${customer.total_credit_balance.toLocaleString(undefined, {minimumFractionDigits: 2})}`
+      });
+    }
+    
+    await Customer.findByIdAndDelete(req.params.id);
+    res.status(200).json({ message: 'Customer deleted successfully' });
+  } catch (err) {
+    console.error('Error deleting customer:', err);
+    res.status(500).json({ error: 'Failed to delete customer', details: err.message });
+  }
+});
+
 // Create a new sale
 app.post('/api/sales', async (req, res) => {
   try {
@@ -670,7 +694,7 @@ app.get('/api/customer-credit-accounts', async (req, res) => {
     console.log('Found customers:', customers.length);
     
     const creditAccounts = await Promise.all(customers.map(async (customer) => {
-      console.log('Processing customer:', customer.name);
+      console.log('Processing customer:', customer.name, 'with ID:', customer._id);
       
       // Get all credit transactions for this customer
       const creditTransactions = await CreditTransaction.find({ 
@@ -678,6 +702,17 @@ app.get('/api/customer-credit-accounts', async (req, res) => {
       }).sort({ transaction_date: -1 });
       
       console.log('Found transactions for', customer.name, ':', creditTransactions.length);
+      
+      // Log each transaction for debugging
+      creditTransactions.forEach((tx, index) => {
+        console.log(`  Transaction ${index + 1}:`, {
+          id: tx._id,
+          total_amount: tx.total_amount,
+          amount_paid: tx.amount_paid,
+          payment_status: tx.payment_status,
+          transaction_date: tx.transaction_date
+        });
+      });
       
       // Calculate totals
       const totalCredit = creditTransactions.reduce((sum, transaction) => 
@@ -687,6 +722,12 @@ app.get('/api/customer-credit-accounts', async (req, res) => {
         sum + (transaction.amount_paid || 0), 0);
       
       const balance = totalCredit - amountPaid;
+      
+      console.log('Calculated totals for', customer.name, ':', {
+        totalCredit,
+        amountPaid,
+        balance
+      });
       
       // Get last payment date from Repayment collection
       const lastRepayment = await Repayment.findOne({
@@ -737,6 +778,40 @@ app.get('/api/customer-credit-accounts', async (req, res) => {
   }
 });
 
+// Debug endpoint to check all credit transactions
+app.get('/api/debug/credit-transactions', async (req, res) => {
+  try {
+    console.log('Debug endpoint called: /api/debug/credit-transactions');
+    
+    const allTransactions = await CreditTransaction.find({})
+      .populate('customer_id', 'name phone')
+      .populate('sale_id', 'invoice_number total_amount')
+      .sort({ transaction_date: -1 });
+    
+    console.log('Total credit transactions found:', allTransactions.length);
+    
+    const formattedTransactions = allTransactions.map(tx => ({
+      id: tx._id,
+      customer_name: tx.customer_id?.name || 'Unknown',
+      customer_phone: tx.customer_id?.phone || 'Unknown',
+      sale_invoice: tx.sale_id?.invoice_number || 'Unknown',
+      total_amount: tx.total_amount,
+      amount_paid: tx.amount_paid,
+      payment_status: tx.payment_status,
+      transaction_date: tx.transaction_date,
+      agreed_repayment_date: tx.agreed_repayment_date
+    }));
+    
+    res.status(200).json({
+      total_count: allTransactions.length,
+      transactions: formattedTransactions
+    });
+  } catch (err) {
+    console.error('Error in debug endpoint:', err);
+    res.status(500).json({ error: 'Server error in debug endpoint' });
+  }
+});
+
 // Get customers with credit records (for dropdown)
 app.get('/api/customers-with-credit', async (req, res) => {
   try {
@@ -754,7 +829,7 @@ app.get('/api/customers-with-credit', async (req, res) => {
     }
     
     const customers = await Customer.find(query)
-      .select('name phone email total_credit_balance')
+      .select('name phone email')
       .sort({ name: 1 })
       .limit(20);
     
@@ -929,6 +1004,8 @@ app.post('/api/repayments', async (req, res) => {
       $inc: { total_credit_balance: -amount_paid }
     });
     
+    console.log(`Updated customer ${customer_id} total_credit_balance by -${amount_paid}`);
+    
     res.status(201).json({
       message: 'Payment recorded successfully',
       payment_amount: amount_paid,
@@ -940,6 +1017,52 @@ app.post('/api/repayments', async (req, res) => {
   } catch (err) {
     console.error('Error recording payment:', err);
     res.status(400).json({ error: 'Failed to record payment', details: err.message });
+  }
+});
+
+// Utility endpoint to recalculate customer credit balances
+app.post('/api/recalculate-customer-balances', async (req, res) => {
+  try {
+    console.log('Starting customer credit balance recalculation...');
+    
+    // Get all credit customers
+    const creditCustomers = await Customer.find({ is_credit_customer: true });
+    console.log(`Found ${creditCustomers.length} credit customers to recalculate`);
+    
+    let updatedCount = 0;
+    
+    for (const customer of creditCustomers) {
+      // Get all credit transactions for this customer
+      const transactions = await CreditTransaction.find({ 
+        customer_id: customer._id,
+        payment_status: { $ne: 'paid' } // Only consider unpaid/partially paid transactions
+      });
+      
+      // Calculate total outstanding balance
+      const totalOutstanding = transactions.reduce((sum, transaction) => {
+        const outstanding = transaction.total_amount - (transaction.amount_paid || 0);
+        return sum + outstanding;
+      }, 0);
+      
+      // Update customer's total credit balance
+      await Customer.findByIdAndUpdate(customer._id, {
+        total_credit_balance: totalOutstanding
+      });
+      
+      console.log(`Customer ${customer.name} (${customer._id}): Updated balance from ${customer.total_credit_balance} to ${totalOutstanding}`);
+      updatedCount++;
+    }
+    
+    console.log(`Successfully recalculated balances for ${updatedCount} customers`);
+    
+    res.status(200).json({
+      message: 'Customer credit balances recalculated successfully',
+      customers_updated: updatedCount
+    });
+    
+  } catch (err) {
+    console.error('Error recalculating customer balances:', err);
+    res.status(500).json({ error: 'Failed to recalculate customer balances', details: err.message });
   }
 });
 
