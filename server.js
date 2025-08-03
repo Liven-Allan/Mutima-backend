@@ -2141,8 +2141,33 @@ app.get('/api/sales/top-items', async (req, res) => {
 // Get monthly sales totals for all months (completed sales only)
 app.get('/api/sales/monthly-totals', async (req, res) => {
   try {
+    let matchStage = { status: 'completed' };
+    
+    // Handle year and month filtering
+    const { year, month } = req.query;
+    if (year && month) {
+      // Filter by specific year and month
+      const start = new Date(Number(year), Number(month) - 1, 1);
+      const end = new Date(Number(year), Number(month), 1);
+      matchStage.date = { $gte: start, $lt: end };
+      console.log('Filtering monthly totals by year and month:', { year, month, start, end });
+    } else if (year) {
+      // Filter by year only
+      const start = new Date(Number(year), 0, 1);
+      const end = new Date(Number(year) + 1, 0, 1);
+      matchStage.date = { $gte: start, $lt: end };
+      console.log('Filtering monthly totals by year:', { year, start, end });
+    } else if (month) {
+      // Filter by month only (current year)
+      const currentYear = new Date().getFullYear();
+      const start = new Date(currentYear, Number(month) - 1, 1);
+      const end = new Date(currentYear, Number(month), 1);
+      matchStage.date = { $gte: start, $lt: end };
+      console.log('Filtering monthly totals by month:', { month, start, end });
+    }
+    
     const result = await Sale.aggregate([
-      { $match: { status: 'completed' } },
+      { $match: matchStage },
       {
         $group: {
           _id: { $dateToString: { format: "%Y-%m", date: "$date" } },
