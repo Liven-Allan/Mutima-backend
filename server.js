@@ -1973,29 +1973,91 @@ app.get('/api/sales/date-ranges', async (req, res) => {
   }
 });
 
+// Test endpoint to check if backend is working
+app.get('/api/test', (req, res) => {
+  res.json({ message: 'Backend is working!', timestamp: new Date().toISOString() });
+});
+
+// Debug endpoint to check sales data
+app.get('/api/debug/sales-data', async (req, res) => {
+  try {
+    const Sale = require('./models/Sale');
+    const SaleItem = require('./models/SaleItem');
+    const Item = require('./models/Item');
+    
+    const totalSales = await Sale.countDocuments();
+    const totalSaleItems = await SaleItem.countDocuments();
+    const totalItems = await Item.countDocuments();
+    
+    // Get a sample of recent sales
+    const recentSales = await Sale.find().sort({ date: -1 }).limit(5);
+    const recentSaleItems = await SaleItem.find().limit(5);
+    
+    res.json({
+      totalSales,
+      totalSaleItems,
+      totalItems,
+      recentSales: recentSales.map(s => ({ id: s._id, date: s.date, total: s.grand_total })),
+      recentSaleItems: recentSaleItems.map(si => ({ 
+        id: si._id, 
+        sale_id: si.sale_id, 
+        item_id: si.item_id, 
+        quantity: si.quantity_sold,
+        price: si.total_price 
+      }))
+    });
+  } catch (err) {
+    console.error('Debug endpoint error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Get top selling items (for analytics)
 app.get('/api/sales/top-items', async (req, res) => {
   try {
+    console.log('Top selling items API called with query:', req.query);
+    
     const alpha = 1;
     const beta = 0.001;
     const { year, month } = req.query;
     let matchStage = {};
+    let saleIdFilter = {};
+    
     if (year && month) {
       // Calculate start and end dates for the month
       const start = new Date(Number(year), Number(month) - 1, 1);
       const end = new Date(Number(year), Number(month), 1);
       matchStage = { date: { $gte: start, $lt: end } };
-    }
-    let saleIdFilter = {};
-    if (year && month) {
+      console.log('Filtering by date range:', { start, end });
+      
       // Find sales in the month
       const Sale = require('./models/Sale');
       const salesInMonth = await Sale.find(matchStage, '_id');
       const saleIds = salesInMonth.map(s => s._id);
       saleIdFilter = { sale_id: { $in: saleIds } };
+      console.log('Found sales in month:', saleIds.length);
     }
-    const topItems = await SaleItem.aggregate([
-      ...(year && month ? [{ $match: saleIdFilter }] : []),
+    
+    // First, let's check if we have any SaleItem data at all
+    const totalSaleItems = await SaleItem.countDocuments();
+    console.log('Total SaleItem documents:', totalSaleItems);
+    
+    // Also check if there are any completed sales
+    const Sale = require('./models/Sale');
+    const completedSales = await Sale.countDocuments({ status: 'completed' });
+    console.log('Completed sales count:', completedSales);
+    
+    if (totalSaleItems === 0) {
+      console.log('No SaleItem documents found');
+      return res.json([]);
+    }
+    
+    // Let's also check if there are any SaleItem documents with valid item_id references
+    const validSaleItems = await SaleItem.countDocuments({ item_id: { $exists: true, $ne: null } });
+    console.log('SaleItem documents with valid item_id:', validSaleItems);
+    
+    const aggregationPipeline = [
+      // First, let's try without any date filtering to see if we have any data at all
       {
         $group: {
           _id: '$item_id',
@@ -2027,16 +2089,22 @@ app.get('/api/sales/top-items', async (req, res) => {
           _id: 0,
           item_id: '$_id',
           item_name: '$item_info.name',
-          quantity: 1,
-          cost: 1,
+          quantity: '$quantity',
+          cost: '$cost',
           score: 1
         }
       }
-    ]);
+    ];
+    
+    console.log('Aggregation pipeline:', JSON.stringify(aggregationPipeline, null, 2));
+    
+    const topItems = await SaleItem.aggregate(aggregationPipeline);
+    console.log('Top items result:', topItems);
+    
     res.json(topItems);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to fetch top selling items' });
+    console.error('Error in top selling items API:', err);
+    res.status(500).json({ error: 'Failed to fetch top selling items', details: err.message });
   }
 });
 
@@ -3419,4 +3487,99 @@ app.delete('/api/item-losses/:id', async (req, res) => {
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+});
+
+// Debug endpoint to check SaleItem data
+app.get('/api/debug/sale-items', async (req, res) => {
+  try {
+    console.log('Debug SaleItem endpoint called');
+    
+    // Check total count
+    const totalSaleItems = await SaleItem.countDocuments();
+    console.log('Total SaleItem documents:', totalSaleItems);
+    
+    if (totalSaleItems === 0) {
+      return res.json({
+        message: 'No SaleItem documents found',
+        total: 0,
+        sample: null
+      });
+    }
+    
+    // Get a sample document
+    const sampleSaleItem = await SaleItem.findOne().populate('item_id', 'name');
+    console.log('Sample SaleItem:', sampleSaleItem);
+    
+    // Check if there are any completed sales
+    const Sale = require('./models/Sale');
+    const completedSales = await Sale.countDocuments({ status: 'completed' });
+    console.log('Completed sales count:', completedSales);
+    
+    // Get sample sale items with item info
+    const sampleItems = await SaleItem.aggregate([
+      { $limit: 5 },
+      {
+        $lookup: {
+          from: 'items',
+          localField: 'item_id',
+          foreignField: '_id',
+          as: 'item_info'
+        }
+      },
+      { $unwind: '$item_info' },
+      {
+        $project: {
+          _id: 1,
+          sale_id: 1,
+          item_name: '$item_info.name',
+          quantity_sold: 1,
+          total_price: 1
+        }
+      }
+    ]);
+    
+    res.json({
+      message: 'SaleItem data found',
+      total: totalSaleItems,
+      completedSales: completedSales,
+      sample: sampleSaleItem,
+      sampleItems: sampleItems
+    });
+    
+  } catch (err) {
+    console.error('Debug SaleItem endpoint error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Simple test endpoint for SaleItem data
+app.get('/api/test/sale-items', async (req, res) => {
+  try {
+    console.log('Test SaleItem endpoint called');
+    
+    // Get all SaleItem documents with basic info
+    const saleItems = await SaleItem.find()
+      .populate('item_id', 'name')
+      .populate('sale_id', 'date status')
+      .limit(10);
+    
+    console.log('Found sale items:', saleItems.length);
+    
+    res.json({
+      count: saleItems.length,
+      items: saleItems.map(item => ({
+        id: item._id,
+        sale_id: item.sale_id,
+        item_name: item.item_id ? item.item_id.name : 'Unknown',
+        quantity_sold: item.quantity_sold,
+        total_price: item.total_price,
+        sale_date: item.sale_id ? item.sale_id.date : null,
+        sale_status: item.sale_id ? item.sale_id.status : null
+      }))
+    });
+    
+  } catch (err) {
+    console.error('Test SaleItem endpoint error:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
