@@ -1839,7 +1839,30 @@ app.get('/api/sales/recent', async (req, res) => {
     const limit = parseInt(req.query.limit) || 4;
     const skip = (page - 1) * limit;
     let filter = {};
-    if (req.query.date) {
+    
+    // Handle year and month filtering
+    const { year, month } = req.query;
+    if (year && month) {
+      // Filter by specific year and month
+      const start = new Date(Number(year), Number(month) - 1, 1);
+      const end = new Date(Number(year), Number(month), 1);
+      filter.date = { $gte: start, $lt: end };
+      console.log('Filtering recent sales by year and month:', { year, month, start, end });
+    } else if (year) {
+      // Filter by year only
+      const start = new Date(Number(year), 0, 1);
+      const end = new Date(Number(year) + 1, 0, 1);
+      filter.date = { $gte: start, $lt: end };
+      console.log('Filtering recent sales by year:', { year, start, end });
+    } else if (month) {
+      // Filter by month only (current year)
+      const currentYear = new Date().getFullYear();
+      const start = new Date(currentYear, Number(month) - 1, 1);
+      const end = new Date(currentYear, Number(month), 1);
+      filter.date = { $gte: start, $lt: end };
+      console.log('Filtering recent sales by month:', { month, start, end });
+    } else if (req.query.date) {
+      // Legacy date filtering (specific date)
       const date = new Date(req.query.date);
       const start = new Date(date);
       start.setHours(0, 0, 0, 0);
@@ -2020,32 +2043,32 @@ app.get('/api/sales/top-items', async (req, res) => {
     const alpha = 1;
     const beta = 0.001;
     const { year, month } = req.query;
-    let matchStage = {};
-    let saleIdFilter = {};
+    let dateFilter = {};
     
     if (year && month) {
       // Calculate start and end dates for the month
       const start = new Date(Number(year), Number(month) - 1, 1);
       const end = new Date(Number(year), Number(month), 1);
-      matchStage = { date: { $gte: start, $lt: end } };
-      console.log('Filtering by date range:', { start, end });
-      
-      // Find sales in the month
-      const Sale = require('./models/Sale');
-      const salesInMonth = await Sale.find(matchStage, '_id');
-      const saleIds = salesInMonth.map(s => s._id);
-      saleIdFilter = { sale_id: { $in: saleIds } };
-      console.log('Found sales in month:', saleIds.length);
+      dateFilter = { createdAt: { $gte: start, $lt: end } };
+      console.log('Filtering by SaleItem createdAt range:', { start, end });
+    } else if (year) {
+      // Filter by year only
+      const start = new Date(Number(year), 0, 1);
+      const end = new Date(Number(year) + 1, 0, 1);
+      dateFilter = { createdAt: { $gte: start, $lt: end } };
+      console.log('Filtering by SaleItem createdAt year:', { start, end });
+    } else if (month) {
+      // Filter by month only (current year)
+      const currentYear = new Date().getFullYear();
+      const start = new Date(currentYear, Number(month) - 1, 1);
+      const end = new Date(currentYear, Number(month), 1);
+      dateFilter = { createdAt: { $gte: start, $lt: end } };
+      console.log('Filtering by SaleItem createdAt month:', { start, end });
     }
     
     // First, let's check if we have any SaleItem data at all
     const totalSaleItems = await SaleItem.countDocuments();
     console.log('Total SaleItem documents:', totalSaleItems);
-    
-    // Also check if there are any completed sales
-    const Sale = require('./models/Sale');
-    const completedSales = await Sale.countDocuments({ status: 'completed' });
-    console.log('Completed sales count:', completedSales);
     
     if (totalSaleItems === 0) {
       console.log('No SaleItem documents found');
@@ -2056,8 +2079,15 @@ app.get('/api/sales/top-items', async (req, res) => {
     const validSaleItems = await SaleItem.countDocuments({ item_id: { $exists: true, $ne: null } });
     console.log('SaleItem documents with valid item_id:', validSaleItems);
     
+    // Check filtered documents count
+    if (Object.keys(dateFilter).length > 0) {
+      const filteredCount = await SaleItem.countDocuments(dateFilter);
+      console.log('SaleItem documents matching date filter:', filteredCount);
+    }
+    
     const aggregationPipeline = [
-      // First, let's try without any date filtering to see if we have any data at all
+      // Add date filter if specified
+      ...(Object.keys(dateFilter).length > 0 ? [{ $match: dateFilter }] : []),
       {
         $group: {
           _id: '$item_id',
