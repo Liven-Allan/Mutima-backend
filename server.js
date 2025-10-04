@@ -22,35 +22,8 @@ dotenv.config();
 
 const app = express();
 
-// 1. DEFINE ALLOWED ORIGINS
-// Add your Vercel frontend domain here, alongside localhost for local development.
-const allowedOrigins = [
-    'http://localhost:5000', // For local development (or whatever port you use)
-    'https://mutimashop-app.vercel.app' // <-- YOUR LIVE FRONTEND DOMAIN
-];
-
-// 2. CONFIGURE CORS MIDDLEWARE
-app.use(cors({
-    origin: function (origin, callback) {
-        // Allow requests with no origin (like mobile apps, postman, or curl)
-        if (!origin) return callback(null, true); 
-        
-        // Check if the request's origin is in the allowed list
-        if (allowedOrigins.includes(origin)) {
-            callback(null, true);
-        } else {
-            // Block the request if the origin is not allowed
-            callback(new Error('Not allowed by CORS'), false);
-        }
-    },
-    // IMPORTANT: Set credentials to true, as your login/data requests rely on the 
-    // Authorization header (JWT token).
-    credentials: true 
-}));
-
-
-
 // Middleware
+app.use(cors());
 app.use(express.json());
 
 // --- Seed Categories ---
