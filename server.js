@@ -174,6 +174,52 @@ app.get('/api/categories', async (req, res) => {
   }
 });
 
+// Create a new category
+app.post('/api/categories', async (req, res) => {
+  try {
+    const { name, item_type } = req.body || {};
+    if (!name || !item_type) {
+      return res.status(400).json({ error: 'Missing required fields: name, item_type' });
+    }
+
+    // Validate item_type against enum
+    const allowedTypes = ['product', 'material', 'equipment', 'consumable', 'other'];
+    if (!allowedTypes.includes(item_type)) {
+      return res.status(400).json({ error: 'Invalid item_type' });
+    }
+
+    const category = new Category({ name: name.trim(), item_type });
+    await category.save();
+    return res.status(201).json(category);
+  } catch (err) {
+    // Handle duplicate key error (unique name)
+    if (err && err.code === 11000) {
+      return res.status(409).json({ error: 'Category with this name already exists' });
+    }
+    console.error('Error creating category:', err);
+    return res.status(500).json({ error: 'Server error while creating category' });
+  }
+});
+
+// Delete a category
+app.delete('/api/categories/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!id) {
+      return res.status(400).json({ error: 'Missing category id' });
+    }
+
+    const deleted = await Category.findByIdAndDelete(id);
+    if (!deleted) {
+      return res.status(404).json({ error: 'Category not found' });
+    }
+    return res.status(200).json({ message: 'Category deleted successfully' });
+  } catch (err) {
+    console.error('Error deleting category:', err);
+    return res.status(500).json({ error: 'Server error while deleting category' });
+  }
+});
+
 // Signup route
 app.post('/api/auth/signup', async (req, res) => {
   try {
